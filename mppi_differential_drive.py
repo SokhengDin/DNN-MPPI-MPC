@@ -1,10 +1,13 @@
 import numpy as np
 import math
+import matplotlib.pyplot as plt
 
+from matplotlib.animation import FuncAnimation
 from typing import Tuple
 from path_generator.cubic_spline_planner import CubicSpline2D, calc_spline_course
 from path_generator.bezierPath import calc_4points_bezier_path, calc_bezier_path
 from models.differetialSim import DifferentialSimulation
+from math import pi, cos, sin
 
 class DifferentialDrive:
     def __init__(self, init_x):
@@ -49,6 +52,8 @@ class MPPIAlgorithms:
             sigma: np.ndarray,
             stage_cost_weight: np.ndarray,
             terminal_cost_weight: np.ndarray,
+            visualize_optimal_traj = True,
+            visualze_sampled_trajs = True
         ) -> None:
         """Initialize the MPPI algorithm"""
         ## mppi parameters
@@ -67,6 +72,8 @@ class MPPIAlgorithms:
         self.Sigma = sigma
         self.stage_cost_weight = stage_cost_weight
         self.terminal_cost_weight = terminal_cost_weight
+        self.visualize_optimal_traj = visualize_optimal_traj
+        self.visualze_sampled_trajs = visualze_sampled_trajs
 
         # mppi variables 
         self.u_prev = np.zeros((self.T, self.dim_u))
@@ -130,11 +137,29 @@ class MPPIAlgorithms:
         # update control input sequence
         u += w_epsilon
 
+        # calculate optimal trajectory
+        optimal_traj = np.zeros((self.T, self.dim_x))
+        if self.visualze_sampled_trajs:
+            x = x0
+            for t in range(self.T):
+                x = self._state_transition(x, self._g(u[t-1]))
+                optimal_traj[t] = x
+
+        # calculate sampled trajectories
+        sampled_traj_list = np.zeros((self.K, self.T, self.dim_x))
+        sorted_idx = np.argsort(S)
+        if self.visualze_sampled_trajs:
+            for k in sorted_idx:
+                x = x0
+                for t in range(self.T):
+                    x = self._state_transition(x, self._g(v[k, t-1]))
+                    sampled_traj_list[k, t] = x
+
         # Update previous control input
         self.u_prev[:-1] = u[1:]
         self.u_prev[-1] = u[-1]
 
-        return u[0], u
+        return u[0], u, optimal_traj, sampled_traj_list
 
     def _compute_weight(self, S: np.ndarray) -> np.ndarray:
         """Compute weights for each sample"""
@@ -194,7 +219,7 @@ class MPPIAlgorithms:
     def _compute_cost(self, x_t: np.ndarray) -> float:
         """Calculate stage cost"""
         x, y, yaw = x_t
-        yaw = ((yaw + 2.0*np.pi) % (2.0*np.pi))
+        # yaw = ((yaw + 2.0*np.pi) % (2.0*np.pi))
         
         # Calculate stage cost
         _, ref_x, ref_y, ref_yaw = self._get_nearest_waypoint(x, y, update_prev_idx=True)
@@ -260,58 +285,135 @@ class MPPIAlgorithms:
         v[1] = np.clip(v[1], -self.max_omega, self.max_omega)
         return v
     
+def plot_trajectories(diff_frame, diff_drive, mppi, delta_t, ref_path, tSim):
+    fig, ax = plt.subplots()
+    ax.set_xlabel('X')
+    ax.set_ylabel('Y')
+    ax.set_title('MPPI Differential Drive')
+    ax.axis('equal')
+    ax.grid(True)
+
+    # Initialize empty lists for artists
+    robot_artists = []
+    optimal_traj_artist, = ax.plot([], [], color='#990099', linestyle="solid", linewidth=1.5, zorder=5)
+    sampled_traj_artists = []
+    ref_traj_artist = None
+
+    def animate(i):
+
+        nonlocal ref_traj_artist
+
+        current_state = diff_drive.get_state()
+        optimal_input, optimal_input_sequence, optimal_traj, sampled_traj_list = mppi._calc_input_control(current_state)
+
+        x, y, yaw = current_state
+
+        # Clear the previous robot artists
+        for artist in robot_artists:
+            artist.remove()
+        robot_artists.clear()
+
+        # Draw the robot
+        robot_artists.extend(diff_frame.generate_each_wheel_and_draw(x, y, yaw))
+        for artist in robot_artists:
+            ax.add_artist(artist)
+
+        # Update the optimal trajectory artist
+        if optimal_traj.any():
+            optimal_traj_artist.set_data(optimal_traj[:, 0], optimal_traj[:, 1])
+        else:
+            optimal_traj_artist.set_data([], [])
+
+        # Clear the previous sampled trajectory artists
+        for artist in sampled_traj_artists:
+            artist.remove()
+        sampled_traj_artists.clear()
+
+        # Draw the sampled trajectories from mppi
+        if sampled_traj_list.any():
+            min_alpha_value = 0.25
+            max_alpha_value = 0.35
+            for idx, sampled_traj in enumerate(sampled_traj_list):
+                # Draw darker for better samples
+                alpha_value = (1.0 - (idx + 1) / len(sampled_traj_list)) * (max_alpha_value - min_alpha_value) + min_alpha_value
+
+                # Extend the length of the sampled trajectory lines
+                extended_sampled_traj = np.zeros((sampled_traj.shape[0] + 1, sampled_traj.shape[1]))
+                extended_sampled_traj[:-1, :] = sampled_traj
+                extended_sampled_traj[-1, :] = sampled_traj[-1, :] + (sampled_traj[-1, :] - sampled_traj[-2, :]) * 0.5
+
+                sampled_traj_artist, = ax.plot(sampled_traj[:, 0], sampled_traj[:, 1], color='gray', linestyle="solid", linewidth=0.2, zorder=4, alpha=alpha_value)
+                sampled_traj_artists.append(sampled_traj_artist)
+
+        # Clear the previous reference trajectory artist
+        if ref_traj_artist is not None:
+            ref_traj_artist.remove()
+
+        # Draw the reference trajectory
+        ref_traj_x_offset = ref_path[:, 0]
+        ref_traj_y_offset = ref_path[:, 1]
+        ref_traj_artist, = ax.plot(ref_traj_x_offset, ref_traj_y_offset, color='blue', linestyle="dashed", linewidth=1.0, zorder=3, label='Reference Trajectory')
+
+        ax.set_xlim(x - 5, x + 5)
+        ax.set_ylim(y - 5, y + 5)
+        ax.legend()
+
+        print(f"Optimal Input: {optimal_input}")
+        print(f"Time: {i * delta_t:>2.2f}[s], x={x:>+3.3f}[m], y={y:>+3.3f}[m], yaw={yaw:>+3.3f}[rad]")
+
+        diff_drive.update_state(delta_t, current_state, optimal_input)
+
+        return robot_artists + [optimal_traj_artist] + sampled_traj_artists + [ref_traj_artist]
+
+    ani = FuncAnimation(fig, animate, frames=tSim, interval=50, blit=True, repeat=False)
+    ani.save("mppi_differential_drive.mp4", writer='ffmpeg', fps=30)
+
+def generate_circle_points(center_x, center_y, radius, num_points=20):
+    angles = np.linspace(0, 2 * pi, num_points)
+    x = center_x + radius * np.cos(angles)
+    y = center_y + radius * np.sin(angles)
+    return x, y
 
 
 if __name__ == "__main__":
     # Initialize the differential drive model
     init_x = np.array([0.0, 0.0, 0.0])
-    tSim = 1000
+    tSim = 500
     diff_drive = DifferentialDrive(init_x)
 
     # Initialize the MPPI algorithm
     delta_t = 0.1
-    max_speed = 1.0
-    max_omega = 1.0
+    max_speed = 3.0
+    max_omega = 3.14
     num_samples_K = 500
     num_horizons_T = 10
     param_exploration = 0.1
-    param_lambda = 1.0
+    param_lambda = 1.0 
     param_alpha = 0.1
     sigma = np.array([[0.1, 0.0], [0.0, 0.1]])
-    stage_cost_weight = np.array([5.0, 5.0, 2.0])
-    terminal_cost_weight = np.array([5.0, 5.0, 2.0])
+    stage_cost_weight = np.array([5.0, 5.0, 10.0])
+    terminal_cost_weight = np.array([5.0, 5.0, 10.0])
 
     # Generate reference path
-    x = [0.0, 0.5, 1.0, 3.0, 5.0]
-    y = [0.0, 1.0, 1.0, 2.0, 4.0]
+    x = [0.0, 0.5, 1.0, 3.0, 3.0, 1.0, -4.0]
+    y = [0.0, 1.0, 1.0, 2.0, 5.0, 1.0, -1.0]
     ds = 0.1
     cx, cy, cyaw, ck, s = calc_spline_course(x, y, ds=ds)
+    # center_x = 0.0
+    # center_y = 0.0
+    # radius = 5.0
+    # ds = 0.1
+
+    # # Generate control points for the circular curve
+    # x, y = generate_circle_points(center_x, center_y, radius)
+
+    # # Calculate the cubic spline course
+    # cx, cy, cyaw, ck, s = calc_spline_course(x, y, ds=ds)
 
     ref_path = np.array([cx, cy, cyaw]).T
 
-
-    # Generate reference path using bezier curve
-    # start_x = -5.0
-    # start_y = 0.0
-    # start_yaw = np.radians(180.0)
-
-    # end_x = 0.0
-    # end_y = 2.0
-    # end_yaw = np.radians(90.0)
-    # offset = -5.0
-
-    # path, control_points = calc_4points_bezier_path(
-    #     start_x, start_y, start_yaw, end_x, end_y, end_yaw, offset)
-    
-    # path_x = path[:, 0]
-    # path_y = path[:, 1]
-    # path_yaw = np.append(np.arctan2(np.diff(path_y), np.diff(path_x)), end_yaw)
-
-    # ref_path = np.array([path_x, path_y, path_yaw]).T
-
-    # print(f"Reference Path: {ref_path}")
-
-    # print(f"Reference Path: {ref_path.shape}")
+    # Prepare simulation
+    diff_frame = DifferentialSimulation()
 
     print("[INFO] Reference Path Generated.")
 
@@ -332,19 +434,5 @@ if __name__ == "__main__":
 
     print("[INFO] MPPI Algorithm Initialized.")
     # Run the MPPI algorithm
-    for i in range(tSim):
-        # get current state
-        current_state = diff_drive.get_state()
-        # try:
-        optimal_input, optimal_input_sequence = mppi._calc_input_control(
-            current_state
-            )
-        # except IndexError as error:
-        #     print("[ERROR] IndexError detected. Terminate simulation.")
-        #     break
-
-        print(f"Optimal Input: {optimal_input}")
-        print(f"Time: {i*delta_t:>2.2f}[s], x={current_state[0]:>+3.3f}[m], y={current_state[1]:>+3.3f}[m], yaw={current_state[2]:>+3.3f}[rad]")
-
-        diff_drive.update_state(delta_t, current_state, optimal_input)
+    plot_trajectories(diff_frame, diff_drive, mppi, delta_t, ref_path, tSim)
 
