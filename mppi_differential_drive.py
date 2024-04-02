@@ -395,20 +395,20 @@ if __name__ == "__main__":
     terminal_cost_weight = np.array([5.0, 5.0, 10.0])
 
     # Generate reference path
-    x = [0.0, 0.5, 1.0, 3.0, 3.0, 1.0, -4.0]
-    y = [0.0, 1.0, 1.0, 2.0, 5.0, 1.0, -1.0]
-    ds = 0.1
-    cx, cy, cyaw, ck, s = calc_spline_course(x, y, ds=ds)
-    # center_x = 0.0
-    # center_y = 0.0
-    # radius = 5.0
+    # x = [0.0, 0.5, 1.0, 3.0, 3.0, 1.0, -4.0]
+    # y = [0.0, 1.0, 1.0, 2.0, 5.0, 1.0, -1.0]
     # ds = 0.1
+    # cx, cy, cyaw, ck, s = calc_spline_course(x, y, ds=ds)
+    center_x = 0.0
+    center_y = 0.0
+    radius = 5.0
+    ds = 0.1
 
-    # # Generate control points for the circular curve
-    # x, y = generate_circle_points(center_x, center_y, radius)
+    # Generate control points for the circular curve
+    x, y = generate_circle_points(center_x, center_y, radius)
 
     # # Calculate the cubic spline course
-    # cx, cy, cyaw, ck, s = calc_spline_course(x, y, ds=ds)
+    cx, cy, cyaw, ck, s = calc_spline_course(x, y, ds=ds)
 
     ref_path = np.array([cx, cy, cyaw]).T
 
