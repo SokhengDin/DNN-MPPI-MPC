@@ -198,7 +198,7 @@ class MPPIAlgorithms:
     def _get_nearest_waypoint(self, x: float, y: float, update_prev_idx: bool = False) -> int:
         """search the closest waypoint to the vehicle on the reference path"""
         
-        SEARCH_IDX_LEN = 10
+        SEARCH_IDX_LEN = 20
         prev_idx = self.prev_way_point_idx
         dx = [x - ref_x for ref_x in self.ref_path[prev_idx:(prev_idx + SEARCH_IDX_LEN), 0]]
         dy = [y - ref_y for ref_y in self.ref_path[prev_idx:(prev_idx + SEARCH_IDX_LEN), 1]]
@@ -386,10 +386,10 @@ if __name__ == "__main__":
     max_speed = 3.0
     max_omega = 3.14
     num_samples_K = 500
-    num_horizons_T = 10
-    param_exploration = 0.1
+    num_horizons_T = 15
+    param_exploration = 0.01
     param_lambda = 1.0 
-    param_alpha = 0.1
+    param_alpha = 0.2
     sigma = np.array([[0.1, 0.0], [0.0, 0.1]])
     stage_cost_weight = np.array([5.0, 5.0, 10.0])
     terminal_cost_weight = np.array([5.0, 5.0, 10.0])
