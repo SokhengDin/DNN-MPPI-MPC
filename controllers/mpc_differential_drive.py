@@ -109,7 +109,10 @@ class MPCController:
         # Export the Casadi Model
         self.model = export_casadi_model()
 
-    def mpc_solver(self, x0: np.ndarray) -> Tuple[AcadosOcpSolver, AcadosOcp]:
+        # Create the ACADOS solver
+        self.mpc_solver, self.mpc = self.create_mpc_solver(x0)
+
+    def create_mpc_solver(self, x0: np.ndarray) -> Tuple[AcadosOcpSolver, AcadosOcp]:
         mpc = AcadosOcp()
 
         model = self.model
@@ -121,6 +124,8 @@ class MPCController:
 
         # set dimensions
         mpc.dims.N = self.N
+        mpc.dims.nx = nx
+        mpc.dims.nu = nu
 
         # Set cost
         Q_mat = self.state_cost_matrix
@@ -161,42 +166,50 @@ class MPCController:
         # Set prediction horizons
         mpc.solver_options.tf = self.Ts
 
-        mpc_solver = AcadosOcpSolver(mpc, json_file='mpc_differential_drive.json')
+        try:
+            print("Creating MPC solver...")
+            mpc_solver = AcadosOcpSolver(mpc, json_file='mpc_differential_drive.json')
+            print("MPC solver created successfully.")
+            return mpc_solver, mpc
+        except Exception as e:
+            print("Error creating MPC solver:", e)
+            raise
 
+        # mpc_solver = AcadosOcpSolver(mpc, json_file='mpc_differential_drive.json'
 
         return mpc_solver, mpc
 
 
-    def run_mpc(self, x0: np.ndarray) -> np.ndarray:
+    def solve_mpc(self, x0: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """
-        Run the MPC controller with the given initial state.
+        Solve the MPC problem with the given initial state.
         """
 
-        # Create the MPC solver
-        mpc_solver, mpc = self.mpc_solver(x0)
+        # Update the initial state in the solver
+        # self.mpc_solver.set(0, "lbx", x0)
+        # self.mpc_solver.set(0, "ubx", x0)
 
-        simX = np.zeros((mpc.dims.N+1, mpc.dims.nx))
-        simU = np.zeros((mpc.dims.N, mpc.dims.nu)) 
-
-        status = mpc_solver.solve()
-        # mpc_solver.print_statistics()
+        # Solve the MPC problem
+        status = self.mpc_solver.solve()
 
         if status != 0:
-            print(f"MPC solver returned status: {status}")
-      
+            raise Exception(f'Acados returned status {status}')
 
-        # Get solution
-        for i in range(mpc.dims.N):
-            simX[i,:] = mpc_solver.get(i, 'x')
-            simU[i,:] = mpc_solver.get(i, 'u')
-        
-        simX[mpc.dims.N,:] = mpc_solver.get(mpc.dims.N, 'x')
+        # Get the optimal state and control trajectories
+        simX = np.zeros((self.mpc.dims.N+1, self.mpc.dims.nx))
+        simU = np.zeros((self.mpc.dims.N, self.mpc.dims.nu))
+
+        for i in range(self.mpc.dims.N):
+            simX[i, :] = self.mpc_solver.get(i, "x")
+            simU[i, :] = self.mpc_solver.get(i, "u")
+
+        simX[self.mpc.dims.N, :] = self.mpc_solver.get(self.mpc.dims.N, "x")
 
         return simX, simU
 
 
 if __name__ == "__main__":
-    # Initialize the MPC Controller
+    # Initialize the MPC Controller     
     ## State and Control
     state_init = np.array([3.0, 0.0, 0.0])
     control_init = np.array([0.0, 0.0])
@@ -253,10 +266,13 @@ if __name__ == "__main__":
         control_ref = np.array([0, 0])   # Desired control reference
         yref = np.concatenate((state_ref, control_ref))
 
-        simX, simU = mpc.run_mpc(state_current)
+        simX, simU = mpc.solve_mpc(state_current)
 
         # Get the first control input from the optimal solution
         u = simU[0, :]
+
+        print('Control:', u)
+        print('State:', state_current)
 
         # Apply the control input to the system
         x1 = state_current + sampling_time * diffRobot.forward_kinematic(u)
