@@ -73,3 +73,70 @@ class DifferentialSimulation:
         artists.append(plt.Line2D(pos_wheel4[0, :]+x, pos_wheel4[1, :]+y, color="black"))
 
         return artists
+    
+class DifferentialDrive:
+    """
+    A class representing a differential drive robot.
+
+    This class provides methods for initializing the robot's initial state
+    and computing the forward kinematics of the differential drive robot.
+
+    Attributes:
+        x0 (float): The initial x-coordinate of the robot.
+        y0 (float): The initial y-coordinate of the robot.
+        theta0 (float): The initial orientation (angle) of the robot in radians.
+    """
+
+    def __init__(self, x0_initial: np.ndarray):
+        """
+        Initialize the differential drive robot with the given initial state.
+
+        Args:
+            x0_initial (np.ndarray): A 1D numpy array representing the initial state
+                of the robot in the format [x, y, theta], where:
+                    x (float): The initial x-coordinate of the robot.
+                    y (float): The initial y-coordinate of the robot.
+                    theta (float): The initial orientation (angle) of the robot in radians.
+        """
+        self.x0 = x0_initial[0]
+        self.y0 = x0_initial[1]
+        self.theta0 = x0_initial[2]
+
+    def forward_kinematic(self, u: np.ndarray) -> np.ndarray:
+        """
+        Compute the forward kinematics of the differential drive robot.
+
+        This method computes the linear and angular velocities of the robot
+        based on the given control input u = [v, w], where v is the linear
+        velocity and w is the angular velocity.
+
+        The state of the robot is represented as x = [x, y, theta], where
+        x and y are the position coordinates, and theta is the orientation
+        (angle) in radians.
+
+        The forward kinematics equations for a differential drive robot are:
+
+            [ẋ]   [v * cos(θ)]
+            [ẏ] = [v * sin(θ)]
+            [θ̇]   [     w    ]
+
+        Args:
+            u (np.ndarray): A 1D numpy array representing the control input
+                in the format [v, w], where:
+                    v (float): The linear velocity of the robot.
+                    w (float): The angular velocity of the robot.
+
+        Returns:
+            np.ndarray: A 1D numpy array representing the linear and angular
+                velocities of the robot in the format [ẋ, ẏ, θ̇], where:
+                    ẋ (float): The linear velocity along the x-axis.
+                    ẏ (float): The linear velocity along the y-axis.
+                    θ̇ (float): The angular velocity (rate of change of orientation).
+        """
+        v, w = u
+        theta = self.theta0
+        x_dot = v * np.cos(theta)
+        y_dot = v * np.sin(theta)
+        theta_dot = w
+        return np.array([x_dot, y_dot, theta_dot])
+    

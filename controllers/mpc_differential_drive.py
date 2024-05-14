@@ -1,12 +1,12 @@
 import sys
-# Append model path
-sys.path.append('..')
-
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 import casadi as ca
 
+from scipy.linalg import block_diag
 from acados_template import AcadosModel, AcadosOcp, AcadosOcpSolver
 from models.differentialSim import DifferentialDrive, DifferentialSimulation
 from typing import Tuple
@@ -55,7 +55,7 @@ def export_casadi_model():
     model.xdot = dae
     model.f_expl_expr = f_expl
     model.f_impl_expr = f_impl
-    model.name = "Differential Drive "
+    model.name = "Differential_Drive"
 
     return model
 
@@ -90,8 +90,6 @@ class MPCController:
         self.state_constraints = {
             'lbx': state_lower_bound,
             'ubx': state_upper_bound,
-            'lbu': control_lower_bound,
-            'ubu': control_upper_bound
         }
 
         self.control_constraints = {
@@ -130,15 +128,25 @@ class MPCController:
         R_mat = self.control_cost_matrix    
 
         # External cost function
-        mpc.cost.cost_type = 'EXTERNAL'
-        mpc.cost.cost_type = 'EXTERNAL'
-        mpc.model.cost_expr_ext_cost = model.x.T @ Q_mat @ model.x + model.u.T @ R_mat @ model.u
-        mpc.model.cost_expr_ext_cost_e = model.x.T @ Q_mat_e @ model.x
+        mpc.cost.cost_type = 'NONLINEAR_LS'
+        mpc.cost.cost_type_e = 'NONLINEAR_LS'
+        mpc.model.cost_y_expr = ca.vertcat(model.x, model.u)
+        mpc.model.cost_y_expr_e = model.x
+
+        mpc.cost.yref = np.zeros((ny, ))
+        mpc.cost.yref_e = np.zeros((ny_e, ))
+
+        mpc.cost.W = block_diag(Q_mat, R_mat)
+        mpc.cost.W_e = Q_mat_e
 
         # Set constraints
         mpc.constraints.lbx = self.state_constraints['lbx']
         mpc.constraints.ubx = self.state_constraints['ubx']
         mpc.constraints.idxbx = np.arange(nx)
+
+        mpc.constraints.lbx_e = self.state_constraints['lbx']
+        mpc.constraints.ubx_e = self.state_constraints['ubx']
+        mpc.constraints.idxbx_e = np.arange(nx)
 
         mpc.constraints.lbu = self.control_constraints['lbu']
         mpc.constraints.ubu = self.control_constraints['ubu']
@@ -167,15 +175,15 @@ class MPCController:
         # Create the MPC solver
         mpc_solver, mpc = self.mpc_solver(x0)
 
-        simX = np.zeros((mpc_solver.dims.N+1, mpc_solver.dims.nx))
-        simU = np.zeros((mpc_solver.dims.N, mpc_solver.dims.nu)) 
+        simX = np.zeros((mpc.dims.N+1, mpc.dims.nx))
+        simU = np.zeros((mpc.dims.N, mpc.dims.nu)) 
 
         status = mpc_solver.solve()
-        mpc_solver.print_statistics()
+        # mpc_solver.print_statistics()
 
-        if status !=0 :
-            raise Exception(f'Acados return status {status}')
-        
+        if status != 0:
+            print(f"MPC solver returned status: {status}")
+      
 
         # Get solution
         for i in range(mpc.dims.N):
@@ -184,14 +192,16 @@ class MPCController:
         
         simX[mpc.dims.N,:] = mpc_solver.get(mpc.dims.N, 'x')
 
+        return simX, simU
+
 
 if __name__ == "__main__":
-    # Intialize the MPC Controller
+    # Initialize the MPC Controller
     ## State and Control
     state_init = np.array([3.0, 0.0, 0.0])
     control_init = np.array([0.0, 0.0])
 
-    ## Currnet State and Control
+    ## Current State and Control
     state_current = state_init
     control_current = control_init
 
@@ -221,7 +231,7 @@ if __name__ == "__main__":
     us = []
 
     # MPC modules
-    mpc_solver = MPCController(
+    mpc = MPCController(
         x0=state_init,
         u0=control_init,
         state_cost_matrix=state_cost_matrix,
@@ -236,22 +246,24 @@ if __name__ == "__main__":
     )
 
     for step in range(Tsim):
-        if step%(1/sampling_time)==0:
+        if step % (1/sampling_time) == 0:
             print('t =', step*sampling_time)
 
-        mpc_solver.set(0, "yref", state_init)
-        mpc_solver.set(0, "lbx", state_current)
-        mpc_solver.set(0, "ubx", state_current)
-        status = mpc_solver.solve()
-        u = mpc_solver.get(0, "u")
-        x1 = state_current + sampling_time * diffRobot.forward_kinematic(
-            state_current, u
-        )
+        state_ref = np.array([5, 0, 0])  # Desired state reference
+        control_ref = np.array([0, 0])   # Desired control reference
+        yref = np.concatenate((state_ref, control_ref))
+
+        simX, simU = mpc.run_mpc(state_current)
+
+        # Get the first control input from the optimal solution
+        u = simU[0, :]
+
+        # Apply the control input to the system
+        x1 = state_current + sampling_time * diffRobot.forward_kinematic(u)
 
         xs.append(state_current)
         us.append(u)
 
         # Update state
         state_current = x1
-
         
