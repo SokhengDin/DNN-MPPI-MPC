@@ -9,11 +9,10 @@ import casadi as ca
 from scipy.linalg import block_diag
 from acados_template import AcadosModel, AcadosOcp, AcadosOcpSolver
 from models.differentialSim import DifferentialDrive, DifferentialSimulation
+from utils.plot_differential_drive import Simulation
 from typing import Tuple
 
 def export_casadi_model():
-    # create mpc to formulate mpc 
-    MPC = AcadosOcp()
 
     # differential model setup 
     ## Define the states
@@ -76,7 +75,8 @@ class MPCController:
             control_lower_bound: np.ndarray,
             control_upper_bound: np.ndarray,
             N: int,
-            dt: float
+            dt: float,
+            Ts: float
               
         ) -> None:
         """
@@ -98,8 +98,8 @@ class MPCController:
         }
 
         self.N = N
-        self.Ts = dt
-        self.dt = self.N/self.Ts
+        self.dt = dt
+        self.Ts = Ts
 
         # Differential Drive Model
         self.differential_drive = DifferentialDrive(
@@ -153,6 +153,8 @@ class MPCController:
         mpc.constraints.ubx_e = self.state_constraints['ubx']
         mpc.constraints.idxbx_e = np.arange(nx)
 
+        mpc.constraints.x0  = x0
+
         mpc.constraints.lbu = self.control_constraints['lbu']
         mpc.constraints.ubu = self.control_constraints['ubu']
         mpc.constraints.idxbu = np.arange(nu)
@@ -175,19 +177,25 @@ class MPCController:
             print("Error creating MPC solver:", e)
             raise
 
-        # mpc_solver = AcadosOcpSolver(mpc, json_file='mpc_differential_drive.json'
 
-        return mpc_solver, mpc
-
-
-    def solve_mpc(self, x0: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    def solve_mpc(self, x0: np.ndarray,
+                        simX: np.ndarray,
+                        simU: np.ndarray,
+                        yref: np.ndarray
+                        ) -> Tuple[np.ndarray, np.ndarray]:
         """
         Solve the MPC problem with the given initial state.
         """
 
+        nx = self.model.x.size()[0]
+
+        # Ensure x0 is the correct shape
+        if x0.shape[0] != nx:
+            raise ValueError(f"Initial state x0 must have dimension {nx}, but got {x0.shape[0]}.")
+
         # Update the initial state in the solver
-        # self.mpc_solver.set(0, "lbx", x0)
-        # self.mpc_solver.set(0, "ubx", x0)
+        self.mpc_solver.set(0, "lbx", x0)
+        self.mpc_solver.set(0, "ubx", x0)
 
         # Solve the MPC problem
         status = self.mpc_solver.solve()
@@ -195,13 +203,13 @@ class MPCController:
         if status != 0:
             raise Exception(f'Acados returned status {status}')
 
-        # Get the optimal state and control trajectories
-        simX = np.zeros((self.mpc.dims.N+1, self.mpc.dims.nx))
-        simU = np.zeros((self.mpc.dims.N, self.mpc.dims.nu))
-
         for i in range(self.mpc.dims.N):
+            self.mpc_solver.set(i, "yref", yref)
+
             simX[i, :] = self.mpc_solver.get(i, "x")
             simU[i, :] = self.mpc_solver.get(i, "u")
+
+        
 
         simX[self.mpc.dims.N, :] = self.mpc_solver.get(self.mpc.dims.N, "x")
 
@@ -211,7 +219,7 @@ class MPCController:
 if __name__ == "__main__":
     # Initialize the MPC Controller     
     ## State and Control
-    state_init = np.array([3.0, 0.0, 0.0])
+    state_init = np.array([0.0, 0.0, 0.0])
     control_init = np.array([0.0, 0.0])
 
     ## Current State and Control
@@ -219,13 +227,13 @@ if __name__ == "__main__":
     control_current = control_init
 
     ## Cost Matrices
-    state_cost_matrix = np.diag([7.0, 7.0, 1.0])
-    control_cost_matrix = np.diag([1.0, 1.0])
-    terminal_cost_matrix = np.diag([7.0, 7.0, 1.0])
+    state_cost_matrix = np.diag([25.0, 25.0, 10.0])
+    control_cost_matrix = np.diag([0.1, 0.1])
+    terminal_cost_matrix = np.diag([25.0, 25.0, 10.0])
 
     ## Constraints
-    state_lower_bound = np.array([0.0, 0.0, 0.0])
-    state_upper_bound = np.array([5.0, 5.0, 0.0])
+    state_lower_bound = np.array([-5.0, -5.0, -3.14])
+    state_upper_bound = np.array([5.0, 5.0, 3.14])
     control_lower_bound = np.array([-30.0, -30.0])
     control_upper_bound = np.array([30.0, 30.0])
 
@@ -234,9 +242,13 @@ if __name__ == "__main__":
         x0_initial=state_init
     )
 
+    # Simulation
+    simulation = DifferentialSimulation()
+
     ## Prediction Horizon
-    N = 20
+    N = 10
     sampling_time = 0.1
+    Ts = 3.0
     Tsim = int(N/sampling_time)
 
     ## Tracks history
@@ -255,24 +267,33 @@ if __name__ == "__main__":
         control_lower_bound=control_lower_bound,
         control_upper_bound=control_upper_bound,
         N=N,
-        dt=sampling_time
+        dt=sampling_time,
+        Ts=Ts
     )
+
+
+    # Get the optimal state and control trajectories
+    simX = np.zeros((mpc.mpc.dims.N+1, mpc.mpc.dims.nx))
+    simU = np.zeros((mpc.mpc.dims.N, mpc.mpc.dims.nu))
 
     for step in range(Tsim):
         if step % (1/sampling_time) == 0:
             print('t =', step*sampling_time)
 
-        state_ref = np.array([5, 0, 0])  # Desired state reference
+        state_ref = np.array([1, 1, 1.57])  # Desired state reference
         control_ref = np.array([0, 0])   # Desired control reference
-        yref = np.concatenate((state_ref, control_ref))
+        yref = np.concatenate([state_ref, control_ref])
 
-        simX, simU = mpc.solve_mpc(state_current)
+        simX, simU = mpc.solve_mpc(state_current, simX, simU, yref)
 
         # Get the first control input from the optimal solution
         u = simU[0, :]
 
         print('Control:', u)
         print('State:', state_current)
+
+        # Plot the animation
+        # simulation.plot_animation(state_current[0], state_current[1], state_current[2])
 
         # Apply the control input to the system
         x1 = state_current + sampling_time * diffRobot.forward_kinematic(u)
@@ -282,4 +303,3 @@ if __name__ == "__main__":
 
         # Update state
         state_current = x1
-        
