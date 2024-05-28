@@ -1,15 +1,15 @@
 import torch
 from pytorch_mppi import MPPI
 
-# Define the dynamics of your system
+
 def dynamics(state, control):
-    # Example: simple linear dynamics
+
     A = torch.tensor([[1.0, 0.1], [0.0, 1.0]], device=state.device)
     B = torch.tensor([[0.0], [0.1]], device=state.device)
 
-    # Ensure control is properly shaped for batch processing
-    control = control.view(control.shape[0], -1)  # Shape (num_samples, control_dim)
-    control = control.unsqueeze(-1)  # Shape (num_samples, control_dim, 1)
+
+    control = control.view(control.shape[0], -1) 
+    control = control.unsqueeze(-1)  
     
     next_state = A @ state + B @ control
     return next_state
@@ -41,9 +41,8 @@ mppi = MPPI(dynamics, running_cost, 1,
             lambda_=1.0)
 
 # Initial state
-state = torch.tensor([[1.0], [0.0]], dtype=dtype, device=device)  # Shape (2, 1)
-state = state.unsqueeze(0).repeat(num_samples, 1, 1)  # Shape (num_samples, 2, 1)
+state = torch.tensor([[1.0], [0.0]], dtype=dtype, device=device) 
+state = state.unsqueeze(0).repeat(num_samples, 1, 1)  
 
-# Run MPPI to get the control action
 control = mppi.command(state)
 print("Control action:", control)
