@@ -1,32 +1,16 @@
 import numpy as np
 from acados_template import AcadosOcp, AcadosOcpSolver, AcadosSimSolver
-from differential_drive_model import export_differential_drive_model
+from race_car_model import export_race_car_model
 import scipy.linalg
 from casadi import vertcat
-from utils import plot_differential_drive
+from utils import plot_race_car
 
-def differential_drive(x0, u):
-    dx = u[0]*np.cos(x0[2])
-    dy = u[0]*np.sin(x0[2])
-    dyaw = u[1]
-
-    return np.array([dx, dy, dyaw])
-
-def runge_kutta(f, x, u, dt):
-    k1 = f(x, u)
-    k2 = f(x + 0.5 * dt * k1, u)
-    k3 = f(x + 0.5 * dt * k2, u)
-    k4 = f(x + dt * k3, u)
-
-    return x + dt / 6 * (k1 + 2*k2 + 2*k3 + k4)
-
-
-def setup(x0, v_max, omega_max, N_horizon, Tf):
+def setup(x0, a_max, delta_max, N_horizon, Tf):
     # create ocp object to formulate the OCP
     ocp = AcadosOcp()
 
     # set model
-    model = export_differential_drive_model()
+    model = export_race_car_model()
     ocp.model = model
 
     nx = model.x.rows()
@@ -40,7 +24,7 @@ def setup(x0, v_max, omega_max, N_horizon, Tf):
     ocp.cost.cost_type = 'NONLINEAR_LS'
     ocp.cost.cost_type_e = 'NONLINEAR_LS'
 
-    Q_mat = 2 * np.diag([1.0, 1.0, 0.1])
+    Q_mat = 2 * np.diag([1.0, 1.0, 0.1, 0.1])
     R_mat = 2 * np.diag([0.1, 0.1])
 
     ocp.cost.W = scipy.linalg.block_diag(Q_mat, R_mat)
@@ -52,8 +36,8 @@ def setup(x0, v_max, omega_max, N_horizon, Tf):
     ocp.cost.yref_e = np.zeros((ny_e,))
 
     # set constraints
-    ocp.constraints.lbu = np.array([-v_max, -omega_max])
-    ocp.constraints.ubu = np.array([v_max, omega_max])
+    ocp.constraints.lbu = np.array([-a_max, -delta_max])
+    ocp.constraints.ubu = np.array([a_max, delta_max])
 
     ocp.constraints.x0 = x0
     ocp.constraints.idxbu = np.array([0, 1])
@@ -77,22 +61,19 @@ def setup(x0, v_max, omega_max, N_horizon, Tf):
 
 
 def main():
-    x0 = np.array([0.0, 0.0, 0.0])
-    yref = np.array([1.0, 0.0, 1.57, 1.0, 0.57])
-    yref_N = np.array([1.0, 0.0, 1.57])
-    v_max = 1.0
-    omega_max = 1.0
+    x0 = np.array([-5.0, -4.0, 1.57, 0.0])
+    a_max = 1.0
+    delta_max = 0.5
 
     Tf = 5.0
     N_horizon = 100
 
-    ocp_solver, integrator = setup(x0, v_max, omega_max, N_horizon, Tf)
+    ocp_solver, integrator = setup(x0, a_max, delta_max, N_horizon, Tf)
 
     nx = ocp_solver.acados_ocp.dims.nx
     nu = ocp_solver.acados_ocp.dims.nu
 
     Nsim = 100
-    dt = Tf/Nsim
     simX = np.zeros((Nsim+1, nx))
     simU = np.zeros((Nsim, nu))
 
@@ -100,28 +81,15 @@ def main():
 
     # closed loop
     for i in range(Nsim):
-        # Set references for all prediction steps
-        for j in range(N_horizon):
-            ocp_solver.set(j, "yref", yref)
-        ocp_solver.set(N_horizon, "yref", yref_N)
-
         # solve ocp and get next control input
-        ocp_solver.set(0, "lbx", simX[i, :])
-        ocp_solver.set(0, "ubx", simX[i, :])
+        simU[i, :] = ocp_solver.solve_for_x0(x0_bar=simX[i, :])
 
-        status = ocp_solver.solve()
-        if status != 0:
-            raise Exception(f'Acados returned status {status}')
-
-        simU[i, :] = ocp_solver.get(0, "u")
-
-        # simulate system with RK4
-        simX[i + 1, :] = runge_kutta(differential_drive, simX[i, :], simU[i, :], dt)
-
+        # simulate system
+        simX[i+1, :] = integrator.simulate(x=simX[i, :], u=simU[i, :])
 
     # plot results
     model = ocp_solver.acados_ocp.model
-    plot_differential_drive(np.linspace(0, Tf, Nsim+1), v_max, omega_max, simU, simX, x_labels=model.x_labels, u_labels=model.u_labels)
+    plot_race_car(np.linspace(0, Tf, Nsim+1), a_max, delta_max, simU, simX, x_labels=model.x_labels, u_labels=model.u_labels)
 
 if __name__ == '__main__':
     main()

@@ -5,64 +5,102 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 import casadi as ca
+import torch
+import torch.nn as nn
+import l4casadi as l4c
 
 from scipy.linalg import block_diag
-from acados_template import AcadosModel, AcadosOcp, AcadosOcpSolver, AcadosSimSolver, AcadosSim
-from models.differentialSim import DifferentialSimulation
+from acados_template import AcadosModel, AcadosOcp, AcadosOcpSolver, AcadosSim, AcadosSimSolver
+from models.raceCarSim import RacecarModel
 from utils.plot_differential_drive import Simulation
 from typing import Tuple
 
-def export_casadi_model():
 
-    # differential model setup 
-    ## Define the states
-    x = ca.SX.sym('x')
-    y = ca.SX.sym('y')
-    yaw = ca.SX.sym('yaw')
-    states = ca.vertcat(x, y, yaw)
+class MultiLayerPerceptron(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.input_layer = nn.Linear(4, 512)
+        hidden_layers = []
+        for i in range(2):
+            hidden_layers.append(nn.Linear(512, 512))
+        self.hidden_layer = nn.ModuleList(hidden_layers)
+        self.out_layer = nn.Linear(512, 4)
+        with torch.no_grad():
+            self.out_layer.bias.fill_(0.)
+            self.out_layer.weight.fill_(0.)
 
-    ## Define the inputs
-    v = ca.SX.sym('v')
-    w = ca.SX.sym('w')
-    controls = ca.vertcat(v, w)
+    def forward(self, x):
+        x = self.input_layer(x)
+        for layer in self.hidden_layer:
+            x = torch.tanh(layer(x))
+        x = self.out_layer(x)
+        return x
 
-    ## Define the system equations \dot(x) = f(x,u)
-    rhs = ca.vertcat(
-        v * ca.cos(yaw),
-        v * ca.sin(yaw),
-        w
-    )
 
-    ## Define implicit DAE
-    xdot = ca.SX.sym('xdot')
-    ydot = ca.SX.sym('ydot')
-    yawdot = ca.SX.sym('yawdot')
-    dae = ca.vertcat(xdot, ydot, yawdot)
+class RaceCarWithLearnedDynamics:
+    def __init__(self, learned_dyn):
+        self.learned_dyn = learned_dyn
 
-    ## Define dynamics system
-    ### Explicit
-    f_expl = rhs
-    ### Implicit
-    f_impl = dae - rhs
+    def model(self):
+        L = 2.5
+        ## Define the states
+        x = ca.SX.sym('x')
+        y = ca.SX.sym('y')
+        yaw = ca.SX.sym('yaw')
+        v = ca.SX.sym('v')
+        states = ca.vertcat(x, y, yaw, v)
 
-    # set model
-    model = AcadosModel()
-    model.x = states
-    model.u = controls
-    model.z = []
-    model.p = []
-    model.xdot = dae
-    model.f_expl_expr = f_expl
-    model.f_impl_expr = f_impl
-    model.name = "Differential_Drive"
+        ## Define the inputs
+        a = ca.SX.sym('a')
+        delta = ca.SX.sym('delta')
+        controls = ca.vertcat(a, delta)
 
-    return model
+        ## Define the system equations \dot(x) = f(x,u)
+        res_model = self.learned_dyn(states)
+
+        rhs = ca.vertcat(
+            v * ca.cos(yaw),
+            v * ca.sin(yaw),
+            v * ca.tan(delta) / L,
+            a
+        ) + res_model
+
+        ## Define implicit DAE
+        xdot = ca.SX.sym('xdot')
+        ydot = ca.SX.sym('ydot')
+        yawdot = ca.SX.sym('yawdot')
+        vdot = ca.SX.sym('vdot')
+        dae = ca.vertcat(xdot, ydot, yawdot, vdot)
+
+        ## Define dynamics system
+        ### Explicit
+        f_expl = rhs
+        ### Implicit
+        f_impl = dae - rhs
+
+        x_start = np.zeros((4,))
+
+        # store to struct
+        model = ca.types.SimpleNamespace()
+        model.x = states
+        model.u = controls
+        model.xdot = dae
+        model.z = ca.vertcat([])
+        model.p = ca.vertcat([])
+        model.f_expl = f_expl
+        model.f_impl = f_impl
+        model.x_start = x_start
+        model.constraints = ca.vertcat([])
+        model.name = "RaceCarDNN"
+
+        return model
 
 
 class MPCController:
 
     def __init__(
             self,
+            model,
             x0: np.ndarray,
             u0: np.ndarray,
             # goal_trajectory: np.ndarray,
@@ -77,13 +115,14 @@ class MPCController:
             N: int,
             dt: float,
             Ts: float,
-            cost_type: str = 'LINEAR_LS'
+            cost_type: str
               
         ) -> None:
         """
         Initialize the MPC controller with the given parameters.
         """
 
+        # Cost type
         self.cost_type = cost_type
 
         self.state_cost_matrix = state_cost_matrix
@@ -104,19 +143,17 @@ class MPCController:
         self.dt = dt
         self.Ts = Ts
 
-        # Differential Drive Model
-        # self.differential_drive = DifferentialDrive(
-        #     x0_initial=x0
-        # )
-
-        # Export the Casadi Model
-        self.model = export_casadi_model()
+        # RaceCar  Model
+        self.learned_dyn_model = l4c.L4CasADi(MultiLayerPerceptron(), model_expects_batch_dim=True, name='learned_dyn')
+        self.racecar_model = RaceCarWithLearnedDynamics(self.learned_dyn_model)
+        self.racecar       = RacecarModel(initial_state=x0, L=2.5, dt=dt)
+        self.model = self.racecar_model.model()
 
         # Create the ACADOS solver
         self.mpc_solver, self.mpc = self.create_mpc_solver(x0)
 
         # Create the ACADOS simulator
-        # self.sim_solver = self.create_sim_solver()
+        self.sim_solver = self.create_sim_solver()
 
     def create_mpc_solver(self, x0: np.ndarray) -> Tuple[AcadosOcpSolver, AcadosOcp]:
         mpc = AcadosOcp()
@@ -162,11 +199,9 @@ class MPCController:
             mpc.cost.yref_e = np.zeros((ny_e, ))
             mpc.cost.W = block_diag(Q_mat, R_mat)
             mpc.cost.W_e = Q_mat_e
+        
 
         # Set constraints
-
-        mpc.constraints.x0  = x0
-
         mpc.constraints.lbx = self.state_constraints['lbx']
         mpc.constraints.ubx = self.state_constraints['ubx']
         mpc.constraints.idxbx = np.arange(nx)
@@ -174,6 +209,8 @@ class MPCController:
         mpc.constraints.lbx_e = self.state_constraints['lbx']
         mpc.constraints.ubx_e = self.state_constraints['ubx']
         mpc.constraints.idxbx_e = np.arange(nx)
+
+        mpc.constraints.x0  = x0
 
         mpc.constraints.lbu = self.control_constraints['lbu']
         mpc.constraints.ubu = self.control_constraints['ubu']
@@ -186,15 +223,16 @@ class MPCController:
         mpc.solver_options.nlp_solver_type = 'SQP_RTI'
         mpc.solver_options.sim_method_num_stages = 4
         mpc.solver_options.sim_method_num_steps = 3
-        mpc.solver_options.nlp_solver_max_iter = 100
-        mpc.solver_options.qp_solver_cond_N = self.N
+
+        mpc.solver_options.model_external_shared_lib_dir = self.learned_dyn_model.shared_lib_dir
+        mpc.solver_options.model_external_shared_lib_name = self.learned_dyn_model.name
 
         # Set prediction horizons
         mpc.solver_options.tf = self.Ts
 
         try:
             print("Creating MPC solver...")
-            mpc_solver = AcadosOcpSolver(mpc, json_file='mpc_differential_drive.json')
+            mpc_solver = AcadosOcpSolver(mpc, json_file='race_car_mpc.json')
             print("MPC solver created successfully.")
             return mpc_solver, mpc
         except Exception as e:
@@ -209,7 +247,6 @@ class MPCController:
 
         # Set simulation options
         sim.solver_options.T = self.dt
-        sim.solver_options.integrator_type = 'ERK'
         sim.solver_options.num_stages = 4
         sim.solver_options.num_steps = 3
 
@@ -222,10 +259,13 @@ class MPCController:
             print("Error creating Sim solver:", e)
             raise
 
+
+
     def solve_mpc(self, x0: np.ndarray,
                         simX: np.ndarray,
                         simU: np.ndarray,
-                        yref: np.ndarray
+                        yref: np.ndarray,
+                        yref_N: np.ndarray
                         ) -> Tuple[np.ndarray, np.ndarray]:
         """
         Solve the MPC problem with the given initial state.
@@ -237,10 +277,6 @@ class MPCController:
         if x0.shape[0] != nx:
             raise ValueError(f"Initial state x0 must have dimension {nx}, but got {x0.shape[0]}.")
 
-        # Update the initial state in the solver
-        self.mpc_solver.set(0, "lbx", x0)
-        self.mpc_solver.set(0, "ubx", x0)
-
         # Solve the MPC problem
         status = self.mpc_solver.solve()
 
@@ -251,35 +287,37 @@ class MPCController:
             self.mpc_solver.set(i, "yref", yref)
 
             simX[i, :] = self.mpc_solver.get(i, "x")
-            simU[i, :] = self.mpc_solver.get(i, "u")
+            simU[i, :] = self.mpc_solver.get(i, "u")  
+
+        # Update the initial state in the solver
+        self.mpc_solver.set(self.mpc.dims.N, "yref", yref_N)
+
+        self.mpc_solver.set(0, "lbx", x0)
+        self.mpc_solver.set(0, "ubx", x0)   
 
         simX[self.mpc.dims.N, :] = self.mpc_solver.get(self.mpc.dims.N, "x")
 
         return simX, simU
     
-
-    def runge_kutta(self, f, x, u, dt):
+    def runge_kutta(self, f: np.ndarray, x: np.ndarray, u: np.ndarray, dt: float) -> np.ndarray:
+        """
+        Compute the state update using the Runge-Kutta method.
+        """
 
         k1 = f(x, u)
         k2 = f(x + 0.5 * dt * k1, u)
         k3 = f(x + 0.5 * dt * k2, u)
         k4 = f(x + dt * k3, u)
+
         return x + dt / 6 * (k1 + 2*k2 + 2*k3 + k4)
-        
-    def differential_drive(self, x0, u):
-
-        dx = u[0] * np.cos(x0[2])
-        dy = u[0] * np.sin(x0[2])
-        dyaw = u[1]
-
-        return np.array([dx, dy, dyaw])
     
+
     def update_stateRungeKutta(self, x0: np.ndarray, u: np.ndarray) -> np.ndarray:
         """
         Use the Runge-Kutta method to update the state based on the current state and control inputs.
         """
 
-        x1 = self.runge_kutta(self.differential_drive, x0, u, self.dt)
+        x1 = self.runge_kutta(self.racecar_model.learned_dyn, x0, u, self.dt)
         return x1
 
 
@@ -292,18 +330,16 @@ class MPCController:
         self.sim_solver.set("u", u)
         status = self.sim_solver.solve()
 
-
         if status != 0:
             raise Exception(f'Simulation failed with status {status}')
 
         x1 = self.sim_solver.get('x')
         return x1
 
-
 if __name__ == "__main__":
     # Initialize the MPC Controller     
     ## State and Control
-    state_init = np.array([0.0, 0.0, 0.0])
+    state_init = np.array([0.0, 0.0, 0.0, 0.0])
     control_init = np.array([0.0, 0.0])
 
     ## Current State and Control
@@ -311,36 +347,40 @@ if __name__ == "__main__":
     control_current = control_init
 
     ## Cost Matrices
-    state_cost_matrix = np.diag([25.0, 25.0, 10.0])
-    control_cost_matrix = np.diag([0.1, 0.1])
-    terminal_cost_matrix = np.diag([25.0, 25.0, 10.0])
+    state_cost_matrix = np.diag([100.0, 100.0, 50.0, 20.0]) 
+    control_cost_matrix = np.diag([1.0, 0.1])                
+    terminal_cost_matrix = np.diag([100.0, 100.0, 50.0, 20.0]) 
 
     ## Constraints
-    state_lower_bound = np.array([-5.0, -5.0, -3.14])
-    state_upper_bound = np.array([5.0, 5.0, 3.14])
-    control_lower_bound = np.array([-30.0, -30.0])
-    control_upper_bound = np.array([30.0, 30.0])
+    state_lower_bound = np.array([-5.0, -5.0, -np.pi, -10.0])
+    state_upper_bound = np.array([5.0, 5.0, np.pi, 10.0])
+    control_lower_bound = np.array([-2.0, -1.0])  
+    control_upper_bound = np.array([2.0, 1.0])
 
-    # Differential Drive Robot
-    # diffRobot = DifferentialDrive(
-    #     x0_initial=state_init
-    # )
 
-    # Simulation
-    simulation = DifferentialSimulation()
+    # RaceCar robot
+    raceCar = RacecarModel(
+        initial_state=state_init
+    )
 
     ## Prediction Horizon
     N = 50
     sampling_time = 0.05
-    Ts = 5.0
+    Ts = 3.0
     Tsim = int(N/sampling_time)
 
     ## Tracks history
-    xs = [state_init.copy()]
+    xs = []
     us = []
 
+    ## Learned Dynamics
+    learned_dyn_model = l4c.L4CasADi(MultiLayerPerceptron(), model_expects_batch_dim=True, name='learned_dyn')
+    model = RaceCarWithLearnedDynamics(
+        learned_dyn_model
+    )
     # MPC modules
     mpc = MPCController(
+        model=model,
         x0=state_init,
         u0=control_init,
         state_cost_matrix=state_cost_matrix,
@@ -356,48 +396,35 @@ if __name__ == "__main__":
         cost_type='NONLINEAR_LS'
     )
 
-    # Set up the ffmpeg writer
-    Writer = animation.writers['ffmpeg']
-    writer = Writer(fps=15, metadata=dict(artist='Me'), bitrate=1800)
-
 
     # Get the optimal state and control trajectories
     simX = np.zeros((mpc.mpc.dims.N+1, mpc.mpc.dims.nx))
     simU = np.zeros((mpc.mpc.dims.N, mpc.mpc.dims.nu))
 
-    fig, ax = plt.subplots(figsize=(12, 7))
+    for step in range(Tsim):
+        if step % (1/sampling_time) == 0:
+            print('t =', step*sampling_time)
 
-    def animate(i):
-        global state_current, simX, simU
-
-        state_ref = np.array([1, 1, 3.14])  # Desired state reference
-        control_ref = np.array([0.5, 0.5])  # Desired control reference
+        state_ref = np.array([2.0, 4.0, 0.0, 4.0])  
+        control_ref = np.array([1.0, 0.5])   
         yref = np.concatenate([state_ref, control_ref])
+        yref_N = np.array([2.0, 4.0, 0.0, 4.0])
 
-        simX, simU = mpc.solve_mpc(state_current, simX, simU, yref)
+        simX, simU = mpc.solve_mpc(state_current, simX, simU, yref, yref_N)
+
         # Get the first control input from the optimal solution
         u = simU[0, :]
 
         print('Control:', u)
         print('State:', state_current)
 
-        # Apply the control input to the system using RK4
-        x1 = mpc.update_stateRungeKutta(state_current, u)
+        # Apply the control input to the system
+        # x1 = state_current + sampling_time * raceCar.forward_kinematic(u)
+        x1 = mpc.update_state(state_current, u)
+        # x1 = mpc.update_stateRungeKutta(state_current, u)
 
-        xs.append(state_current.copy())
+        xs.append(state_current)
         us.append(u)
 
         # Update state
-        state_current = x1.copy()
-
-        ax.cla()
-        ax.set_xlim(-5, 5)
-        ax.set_ylim(-5, 5)
-        simulation.generate_each_wheel_and_draw(state_current[0], state_current[1], state_current[2])
-        ax.set_title("Differential Drive Robot Simulation")
-        ax.grid(True)
-
-    ani = animation.FuncAnimation(fig, animate, frames=Tsim, repeat=False)
-
-    # Save the animation as a MPR4
-    ani.save('results/differential_drive_simulation.mp4', writer=writer)
+        state_current = x1
