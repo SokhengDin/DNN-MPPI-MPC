@@ -12,6 +12,15 @@ from models.differentialSim import DifferentialSimulation
 from utils.plot_differential_drive import Simulation
 from typing import Tuple
 
+def plot_arrow(x, y, yaw, length=0.05, width=0.3, fc="b", ec="k"):
+    if not isinstance(x, float):
+        for (ix, iy, iyaw) in zip(x, y, yaw):
+            plot_arrow(ix, iy, iyaw)
+    else:
+        plt.arrow(x, y, length * np.cos(yaw), length * np.sin(yaw),
+            fc=fc, ec=ec, head_width=width, head_length=width)
+        plt.plot(x, y)
+
 def export_casadi_model():
 
     # differential model setup 
@@ -74,6 +83,9 @@ class MPCController:
             state_upper_bound: np.ndarray,
             control_lower_bound: np.ndarray,
             control_upper_bound: np.ndarray,
+            obstacle_positions: np.ndarray,
+            obstacle_radii: float,
+            safe_distance: float,
             N: int,
             dt: float,
             Ts: float,
@@ -111,6 +123,12 @@ class MPCController:
 
         # Export the Casadi Model
         self.model = export_casadi_model()
+
+
+        self.obstacle_positions = obstacle_positions
+        self.obstacle_radii = obstacle_radii
+        self.safe_distance = safe_distance
+
 
         # Create the ACADOS solver
         self.mpc_solver, self.mpc = self.create_mpc_solver(x0)
@@ -179,6 +197,19 @@ class MPCController:
         mpc.constraints.ubu = self.control_constraints['ubu']
         mpc.constraints.idxbu = np.arange(nu)
 
+        # Add obstacle avoidance constraints
+        num_obstacles = len(self.obstacle_positions)
+        mpc.constraints.lh = np.zeros((num_obstacles,))
+        mpc.constraints.uh = np.full((num_obstacles,), 100000)
+
+        mpc.model.con_h_expr = ca.vertcat(*[
+            (model.x[0] - obstacle_pos[0])**2 + (model.x[1] - obstacle_pos[1])**2
+            for obstacle_pos in self.obstacle_positions
+        ])
+
+        for i in range(num_obstacles):
+            mpc.constraints.lh[i] = (self.obstacle_radii[i] + self.safe_distance)**2
+
         # Set solver options
         mpc.solver_options.qp_solver = 'PARTIAL_CONDENSING_HPIPM'
         mpc.solver_options.hessian_approx = 'GAUSS_NEWTON'
@@ -225,7 +256,8 @@ class MPCController:
     def solve_mpc(self, x0: np.ndarray,
                         simX: np.ndarray,
                         simU: np.ndarray,
-                        yref: np.ndarray
+                        yref: np.ndarray,
+                        yref_N: np.ndarray
                         ) -> Tuple[np.ndarray, np.ndarray]:
         """
         Solve the MPC problem with the given initial state.
@@ -252,6 +284,8 @@ class MPCController:
 
             simX[i, :] = self.mpc_solver.get(i, "x")
             simU[i, :] = self.mpc_solver.get(i, "u")
+
+        self.mpc_solver.set(self.mpc.dims.N, "yref", yref_N)
 
         simX[self.mpc.dims.N, :] = self.mpc_solver.get(self.mpc.dims.N, "x")
 
@@ -312,7 +346,7 @@ if __name__ == "__main__":
 
     ## Cost Matrices
     state_cost_matrix = np.diag([25.0, 25.0, 10.0])
-    control_cost_matrix = np.diag([0.1, 0.1])
+    control_cost_matrix = np.diag([0.1, 0.01])
     terminal_cost_matrix = np.diag([25.0, 25.0, 10.0])
 
     ## Constraints
@@ -321,18 +355,22 @@ if __name__ == "__main__":
     control_lower_bound = np.array([-30.0, -30.0])
     control_upper_bound = np.array([30.0, 30.0])
 
-    # Differential Drive Robot
-    # diffRobot = DifferentialDrive(
-    #     x0_initial=state_init
-    # )
+    # Define multiple obstacles
+    obstacle_positions = np.array([
+        [2.0, 1.0],  # Obstacle 1 position (x, y)
+        [3.0, 3.0],  # Obstacle 2 position (x, y)
+        [2.0, 3.0]   # Obstacle 3 position (x, y)
+    ])
+    obstacle_radii = np.array([0.5, 0.2, 0.4])  # Radii of the obstacles
+    safe_distance = 0.2
 
     # Simulation
     simulation = DifferentialSimulation()
 
     ## Prediction Horizon
-    N = 50
-    sampling_time = 0.05
-    Ts = 5.0
+    N = 100
+    sampling_time = 0.01
+    Ts = 2.0
     Tsim = int(N/sampling_time)
 
     ## Tracks history
@@ -350,6 +388,9 @@ if __name__ == "__main__":
         state_upper_bound=state_upper_bound,
         control_lower_bound=control_lower_bound,
         control_upper_bound=control_upper_bound,
+        obstacle_positions=obstacle_positions,
+        obstacle_radii=obstacle_radii,
+        safe_distance=safe_distance,
         N=N,
         dt=sampling_time,
         Ts=Ts,
@@ -365,39 +406,75 @@ if __name__ == "__main__":
     simX = np.zeros((mpc.mpc.dims.N+1, mpc.mpc.dims.nx))
     simU = np.zeros((mpc.mpc.dims.N, mpc.mpc.dims.nu))
 
-    fig, ax = plt.subplots(figsize=(12, 7))
+    fig, ax = plt.subplots(figsize=(8, 8))
 
-    def animate(i):
-        global state_current, simX, simU
+    # Simulation loop
+    def animate(step):
+        global state_current, simX, simU, xs, us
+        try:
+            # Determine the reference point from the goal trajectory
+            state_ref = np.array([4.0, 4.0, 0.0]) 
+            control_ref = np.array([2.0, 0.5])   
+            yref = np.concatenate([state_ref, control_ref])
+            yref_N = state_ref  # Terminal state reference
 
-        state_ref = np.array([1, 1, 3.14])  # Desired state reference
-        control_ref = np.array([0.5, 0.5])  # Desired control reference
-        yref = np.concatenate([state_ref, control_ref])
+            simX, simU = mpc.solve_mpc(state_current, simX, simU, yref, yref_N)
 
-        simX, simU = mpc.solve_mpc(state_current, simX, simU, yref)
-        # Get the first control input from the optimal solution
-        u = simU[0, :]
+            # Get the first control input from the optimal solution
+            u = simU[0, :]
 
-        print('Control:', u)
-        print('State:', state_current)
+            print('Control:', u)
+            print('State:', state_current)
 
-        # Apply the control input to the system using RK4
-        x1 = mpc.update_stateRungeKutta(state_current, u)
+            # Apply the control input to the system
+            x1 = mpc.update_stateRungeKutta(state_current, u)
 
-        xs.append(state_current.copy())
-        us.append(u)
+            xs.append(state_current)
+            us.append(u)
 
-        # Update state
-        state_current = x1.copy()
+            # Update state
+            state_current = x1
 
-        ax.cla()
-        ax.set_xlim(-5, 5)
-        ax.set_ylim(-5, 5)
-        simulation.generate_each_wheel_and_draw(state_current[0], state_current[1], state_current[2])
-        ax.set_title("Differential Drive Robot Simulation")
-        ax.grid(True)
+            # Clear the previous plot
+            ax.clear()
 
-    ani = animation.FuncAnimation(fig, animate, frames=Tsim, repeat=False)
+            # Plot the race car
+            plot_arrow(state_current[0], state_current[1], state_current[2], length=0.5, width=0.2, fc="r", ec="k")
 
-    # Save the animation as a MPR4
-    ani.save('results/differential_drive_simulation.mp4', writer=writer)
+            # Plot the goal point
+            ax.plot(state_ref[0], state_ref[1], 'bo', markersize=10)
+
+            # Plot the obstacle
+            for obstacle_pos, obstacle_radius in zip(obstacle_positions, obstacle_radii):
+                obstacle = plt.Circle(obstacle_pos, obstacle_radius, color='g', alpha=0.7)
+                ax.add_patch(obstacle)
+
+            # Plot the race car's trajectory
+            xs_array = np.array(xs)
+            ax.plot(xs_array[:, 0], xs_array[:, 1], 'r-', linewidth=1.5)
+
+            # Plot the predicted trajectory using dot stars
+            ax.plot(simX[:, 0], simX[:, 1], 'r*', markersize=8)
+
+            # Set plot limits and labels
+            ax.set_xlim(-2, 10)
+            ax.set_ylim(-2, 10)
+            ax.set_xlabel('X')
+            ax.set_ylabel('Y')
+            ax.set_title('Race Car Obstacle Avoidance')
+
+            # Return the updated objects
+            return ax
+
+        except Exception as e:
+            print("Error in MPC solve step:", e)
+            return None
+
+    # Create the animation
+    ani = animation.FuncAnimation(fig, animate, frames=Tsim, interval=100, blit=False)
+
+    # Save the animation as an MP4 file
+    ani.save('differential_drive_obstacle.mp4', writer='ffmpeg', fps=15)
+
+    # Display the plot
+    plt.show()
