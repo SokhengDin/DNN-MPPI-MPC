@@ -171,8 +171,10 @@ class MPCController:
             mpc.cost.Vx = Vx
             mpc.cost.Vx_e = np.eye(nx)
             Vu = np.zeros((ny, nu))
-            Vu[-nu:, -nu:] = np.eye(nu)
+            Vu[nx : nx + nu, 0:nu] = np.eye(nu)
             mpc.cost.Vu = Vu
+            mpc.cost.yref = np.zeros((ny, ))
+            mpc.cost.yref_e = np.zeros((ny_e, ))
 
         elif self.cost_type == 'NONLINEAR_LS':
             mpc.cost.cost_type = 'NONLINEAR_LS'
@@ -203,9 +205,10 @@ class MPCController:
         # Define obstacle avoidance constraints
         num_obstacles = len(self.obstacle_positions)
         mpc.constraints.lh = np.zeros((num_obstacles,))
-        mpc.constraints.uh = np.full((num_obstacles,), 10000000000)
+        mpc.constraints.uh = np.full((num_obstacles,), 1e8)
 
         obstacle_pos_sym = ca.SX.sym('obstacle_pos', 2, num_obstacles)
+
         mpc.model.p = ca.vertcat(mpc.model.p, ca.vec(obstacle_pos_sym))
         mpc.model.con_h_expr = ca.vertcat(*[
             (model.x[0] - obstacle_pos_sym[0, i])**2 + (model.x[1] - obstacle_pos_sym[1, i])**2 - (self.obstacle_radii[i] + self.safe_distance)**2
@@ -218,7 +221,7 @@ class MPCController:
 
 
         # Set solver options
-        mpc.solver_options.qp_solver = 'PARTIAL_CONDENSING_HPIPM'
+        mpc.solver_options.qp_solver = 'FULL_CONDENSING_HPIPM'
         mpc.solver_options.hessian_approx = 'GAUSS_NEWTON'
         mpc.solver_options.integrator_type = 'ERK'
         mpc.solver_options.nlp_solver_type = 'SQP_RTI'
@@ -286,6 +289,13 @@ class MPCController:
 
         for i in range(self.N+1):
             self.mpc_solver.set(i, 'p', param_values)
+
+        # Warm up the solver
+        for i in range(self.N):
+            self.mpc_solver.set(i, "x", simX[i, :])
+            self.mpc_solver.set(i, "u", simU[i, :])
+
+        self.mpc_solver.set(self.N, "x", simX[self.N, :])
 
         # Solve the MPC problem
         status = self.mpc_solver.solve()
@@ -357,40 +367,40 @@ if __name__ == "__main__":
     control_current = control_init
 
     ## Cost Matrices
-    state_cost_matrix = np.diag([500.0, 500.0, 1450.0])
-    control_cost_matrix = np.diag([1, 1])
-    terminal_cost_matrix = np.diag([500.0, 500.0, 1450.0])
+    state_cost_matrix = np.diag([75.0, 75.0, 150.0])
+    control_cost_matrix = np.diag([1, 0.1])
+    terminal_cost_matrix = np.diag([75.0, 75.0, 150.0])
 
     ## Constraints
     state_lower_bound = np.array([-10.0, -10.0, -3.14])
     state_upper_bound = np.array([10.0, 10.0, 3.14])
-    control_lower_bound = np.array([-15.0, -15.0])
-    control_upper_bound = np.array([15.0, 15.0])
+    control_lower_bound = np.array([-30.0, -31.4])
+    control_upper_bound = np.array([30.0, 31.4])
 
     # Define multiple obstacles
     obstacle_positions = np.array([
         [2.0, 1.0],  # Obstacle 1 position (x, y)
         [3.0, 3.0],  # Obstacle 2 position (x, y)
-        [2.0, 3.0]   # Obstacle 3 position (x, y)
+        [2.0, 6.0]   # Obstacle 3 position (x, y)
     ])
 
     # Define obstacle velocities
-    obstacle_velocities = 6.0*np.array([
-        [0.3, 0.0],   # Velocity of obstacle 1 (vx, vy)
+    obstacle_velocities = 10.0*np.array([
+        [0.3, .6],   # Velocity of obstacle 1 (vx, vy)
         [0.0, -0.6],  # Velocity of obstacle 2 (vx, vy)
         [0.5, 0.1]    # Velocity of obstacle 3 (vx, vy)
     ])
 
     obstacle_radii = np.array([0.5, 0.2, 0.4])  # Radii of the obstacles
-    safe_distance = 0.3
+    safe_distance = 0.7
 
     # Simulation
     simulation = DifferentialSimulation()
 
     ## Prediction Horizon
-    N = 50
+    N =10
     sampling_time = 0.01
-    Ts = 1.0
+    Ts = 0.5
     Tsim = int(N/sampling_time)
 
     ## Tracks history
@@ -414,7 +424,7 @@ if __name__ == "__main__":
         N=N,
         dt=sampling_time,
         Ts=Ts,
-        cost_type='NONLINEAR_LS'
+        cost_type='LINEAR_LS'
     )
 
     # Set up the ffmpeg writer
@@ -435,8 +445,8 @@ if __name__ == "__main__":
         global state_current, simX, simU, xs, us, obstacle_positions
         try:
             # Determine the reference point from the goal trajectory
-            state_ref = np.array([4.0, 4.0, 0.0])
-            control_ref = np.array([2.0, 0.5])
+            state_ref = np.array([6.0, 6.0, 0.0])
+            control_ref = np.array([30.0, 1.57])
             yref = np.concatenate([state_ref, control_ref])
             yref_N = state_ref  # Terminal state reference
 
