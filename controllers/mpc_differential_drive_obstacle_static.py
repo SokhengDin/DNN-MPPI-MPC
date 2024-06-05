@@ -9,6 +9,7 @@ import casadi as ca
 from scipy.linalg import block_diag
 from acados_template import AcadosModel, AcadosOcp, AcadosOcpSolver, AcadosSimSolver, AcadosSim
 from models.differentialSim import DifferentialSimulation
+from models.differentialSimV2 import DiffSimulation
 from utils.plot_differential_drive import Simulation
 from typing import Tuple
 
@@ -59,11 +60,11 @@ def export_casadi_model():
     model.x = states
     model.u = controls
     model.z = []
-    model.p = []
+    model.p = ca.SX.sym('x', 6)
     model.xdot = dae
     model.f_expl_expr = f_expl
     model.f_impl_expr = f_impl
-    model.name = "Differential_Drive"
+    model.name = "Differential_Drive_Static"
 
     return model
 
@@ -197,21 +198,25 @@ class MPCController:
         mpc.constraints.ubu = self.control_constraints['ubu']
         mpc.constraints.idxbu = np.arange(nu)
 
-        # Add obstacle avoidance constraints
+        # Define obstacle avoidance constraints
         num_obstacles = len(self.obstacle_positions)
         mpc.constraints.lh = np.zeros((num_obstacles,))
-        mpc.constraints.uh = np.full((num_obstacles,), 100000)
+        mpc.constraints.uh = np.full((num_obstacles,), 1e8)
 
+        obstacle_pos_sym = ca.SX.sym('obstacle_pos', 2, num_obstacles)
+
+        mpc.model.p = ca.vertcat(mpc.model.p, ca.vec(obstacle_pos_sym))
         mpc.model.con_h_expr = ca.vertcat(*[
-            (model.x[0] - obstacle_pos[0])**2 + (model.x[1] - obstacle_pos[1])**2
-            for obstacle_pos in self.obstacle_positions
+            (model.x[0] - obstacle_pos_sym[0, i])**2 + (model.x[1] - obstacle_pos_sym[1, i])**2 - (self.obstacle_radii[i] + self.safe_distance)**2
+            for i in range(num_obstacles)
         ])
+        mpc.parameter_values = np.zeros(mpc.model.p.size()[0])
 
         for i in range(num_obstacles):
             mpc.constraints.lh[i] = (self.obstacle_radii[i] + self.safe_distance)**2
 
         # Set solver options
-        mpc.solver_options.qp_solver = 'PARTIAL_CONDENSING_HPIPM'
+        mpc.solver_options.qp_solver = 'FULL_CONDENSING_HPIPM'
         mpc.solver_options.hessian_approx = 'GAUSS_NEWTON'
         mpc.solver_options.integrator_type = 'ERK'
         mpc.solver_options.nlp_solver_type = 'SQP_RTI'
@@ -257,7 +262,8 @@ class MPCController:
                         simX: np.ndarray,
                         simU: np.ndarray,
                         yref: np.ndarray,
-                        yref_N: np.ndarray
+                        yref_N: np.ndarray,
+                        obstacle_positions: np.ndarray,
                         ) -> Tuple[np.ndarray, np.ndarray]:
         """
         Solve the MPC problem with the given initial state.
@@ -273,6 +279,24 @@ class MPCController:
         self.mpc_solver.set(0, "lbx", x0)
         self.mpc_solver.set(0, "ubx", x0)
 
+        # Set the obstacle positions
+        param_values = np.concatenate((np.zeros(6), obstacle_positions.flatten()))
+
+        # Set the obstacle positions in the solver
+        for i in range(self.N+1):
+            self.mpc_solver.set(i, 'p', param_values)
+
+        # Set reference trajectory
+        for i in range(self.mpc.dims.N):
+            self.mpc_solver.set(i, "yref", yref)
+        self.mpc_solver.set(self.mpc.dims.N, "yref", yref_N)
+
+        # Warm up the solver
+        for i in range(self.N):
+            self.mpc_solver.set(i, "x", simX[i, :])
+            self.mpc_solver.set(i, "u", simU[i, :])
+        self.mpc_solver.set(self.N, "x", simX[self.N, :])
+
         # Solve the MPC problem
         status = self.mpc_solver.solve()
 
@@ -281,12 +305,8 @@ class MPCController:
 
         for i in range(self.mpc.dims.N):
             self.mpc_solver.set(i, "yref", yref)
-
             simX[i, :] = self.mpc_solver.get(i, "x")
             simU[i, :] = self.mpc_solver.get(i, "u")
-
-        self.mpc_solver.set(self.mpc.dims.N, "yref", yref_N)
-
         simX[self.mpc.dims.N, :] = self.mpc_solver.get(self.mpc.dims.N, "x")
 
         return simX, simU
@@ -345,32 +365,32 @@ if __name__ == "__main__":
     control_current = control_init
 
     ## Cost Matrices
-    state_cost_matrix = np.diag([25.0, 25.0, 10.0])
-    control_cost_matrix = np.diag([0.1, 0.01])
-    terminal_cost_matrix = np.diag([25.0, 25.0, 10.0])
+    state_cost_matrix = np.diag([750.0, 750.0, 900.0])
+    control_cost_matrix = np.diag([1, 0.1])
+    terminal_cost_matrix = np.diag([750.0, 750.0, 900.0])
 
     ## Constraints
-    state_lower_bound = np.array([-5.0, -5.0, -3.14])
-    state_upper_bound = np.array([5.0, 5.0, 3.14])
-    control_lower_bound = np.array([-30.0, -30.0])
-    control_upper_bound = np.array([30.0, 30.0])
+    state_lower_bound = np.array([-10.0, -10.0, -3.14])
+    state_upper_bound = np.array([10.0, 10.0, 3.14])
+    control_lower_bound = np.array([-30.0, -31.4])
+    control_upper_bound = np.array([30.0, 31.4])
 
     # Define multiple obstacles
     obstacle_positions = np.array([
         [2.0, 1.0],  # Obstacle 1 position (x, y)
-        [3.0, 3.0],  # Obstacle 2 position (x, y)
+        [3.0, 2.5],  # Obstacle 2 position (x, y)
         [2.0, 3.0]   # Obstacle 3 position (x, y)
     ])
-    obstacle_radii = np.array([0.5, 0.2, 0.4])  # Radii of the obstacles
+    obstacle_radii = np.array([0.5, 0.3, 0.4])  # Radii of the obstacles
     safe_distance = 0.2
 
     # Simulation
-    simulation = DifferentialSimulation()
+    simulation = DiffSimulation()
 
     ## Prediction Horizon
-    N = 100
+    N = 10
     sampling_time = 0.01
-    Ts = 2.0
+    Ts = 0.1
     Tsim = int(N/sampling_time)
 
     ## Tracks history
@@ -418,7 +438,7 @@ if __name__ == "__main__":
             yref = np.concatenate([state_ref, control_ref])
             yref_N = state_ref  # Terminal state reference
 
-            simX, simU = mpc.solve_mpc(state_current, simX, simU, yref, yref_N)
+            simX, simU = mpc.solve_mpc(state_current, simX, simU, yref, yref_N, obstacle_positions)
 
             # Get the first control input from the optimal solution
             u = simU[0, :]
@@ -453,6 +473,8 @@ if __name__ == "__main__":
             xs_array = np.array(xs)
             ax.plot(xs_array[:, 0], xs_array[:, 1], 'r-', linewidth=1.5)
 
+            simulation.generate_each_wheel_and_draw(state_current[0], state_current[1], state_current[2])
+
             # Plot the predicted trajectory using dot stars
             ax.plot(simX[:, 0], simX[:, 1], 'r*', markersize=8)
 
@@ -461,7 +483,7 @@ if __name__ == "__main__":
             ax.set_ylim(-2, 10)
             ax.set_xlabel('X')
             ax.set_ylabel('Y')
-            ax.set_title('Race Car Obstacle Avoidance')
+            ax.set_title('Differential Drive Obstacle Avoidance')
 
             # Return the updated objects
             return ax

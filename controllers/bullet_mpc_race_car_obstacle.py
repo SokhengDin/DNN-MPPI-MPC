@@ -1,17 +1,31 @@
 import sys
 import os
+import time
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import numpy as np
 import matplotlib.pyplot as plt
-import matplotlib.animation as animation
+from matplotlib.animation import FuncAnimation
+from matplotlib.patches import Circle
 import casadi as ca
+import pybullet as p
+import pybullet_data
 
 from scipy.linalg import block_diag
-from acados_template import AcadosModel, AcadosOcp, AcadosOcpSolver, AcadosSimSolver, AcadosSim
-from models.differentialSim import DifferentialSimulation
-from models.differentialSimV2 import DiffSimulation
-from utils.plot_differential_drive import Simulation
+from acados_template import AcadosModel, AcadosOcp, AcadosOcpSolver, AcadosSim, AcadosSimSolver
+from models.raceCarSim import RacecarModel
 from typing import Tuple
+
+from pynput import keyboard
+
+terminate_simulation = False
+
+def on_press(key):
+    global terminate_simulation
+    try:
+        if key.char == 'q':
+            terminate_simulation = True
+    except AttributeError:
+        pass
 
 def plot_arrow(x, y, yaw, length=0.05, width=0.3, fc="b", ec="k"):
     if not isinstance(x, float):
@@ -24,30 +38,34 @@ def plot_arrow(x, y, yaw, length=0.05, width=0.3, fc="b", ec="k"):
 
 def export_casadi_model():
 
-    # differential model setup 
+    L = 0.325
     ## Define the states
     x = ca.SX.sym('x')
     y = ca.SX.sym('y')
     yaw = ca.SX.sym('yaw')
-    states = ca.vertcat(x, y, yaw)
+    v = ca.SX.sym('v')
+    states = ca.vertcat(x, y, yaw, v)
 
     ## Define the inputs
-    v = ca.SX.sym('v')
-    w = ca.SX.sym('w')
-    controls = ca.vertcat(v, w)
+    a = ca.SX.sym('a')
+    delta = ca.SX.sym('delta')
+    controls = ca.vertcat(a, delta)
 
     ## Define the system equations \dot(x) = f(x,u)
     rhs = ca.vertcat(
         v * ca.cos(yaw),
         v * ca.sin(yaw),
-        w
+        v * ca.tan(delta) / L,
+        a
     )
+
 
     ## Define implicit DAE
     xdot = ca.SX.sym('xdot')
     ydot = ca.SX.sym('ydot')
     yawdot = ca.SX.sym('yawdot')
-    dae = ca.vertcat(xdot, ydot, yawdot)
+    vdot = ca.SX.sym('vdot')
+    dae = ca.vertcat(xdot, ydot, yawdot, vdot)
 
     ## Define dynamics system
     ### Explicit
@@ -60,11 +78,11 @@ def export_casadi_model():
     model.x = states
     model.u = controls
     model.z = []
-    model.p = ca.SX.sym('x', 6) 
+    model.p = ca.SX.sym('p', 6)
     model.xdot = dae
     model.f_expl_expr = f_expl
     model.f_impl_expr = f_impl
-    model.name = "Differential_Drive_Dynamics"
+    model.name = "RaceCarObstacle"
 
     return model
 
@@ -85,18 +103,19 @@ class MPCController:
             control_lower_bound: np.ndarray,
             control_upper_bound: np.ndarray,
             obstacle_positions: np.ndarray,
-            obstacle_radii: float,
+            obstacle_radii: np.ndarray,
             safe_distance: float,
             N: int,
             dt: float,
             Ts: float,
-            cost_type: str = 'LINEAR_LS'
+            cost_type: str
               
         ) -> None:
         """
         Initialize the MPC controller with the given parameters.
         """
 
+        # Cost type
         self.cost_type = cost_type
 
         self.state_cost_matrix = state_cost_matrix
@@ -113,23 +132,19 @@ class MPCController:
             'ubu': control_upper_bound
         }
 
+        self.obstacle_positions = obstacle_positions
+        self.obstacle_radii     = obstacle_radii
+        self.safe_distance      = safe_distance
+
         self.N = N
         self.dt = dt
         self.Ts = Ts
 
-        # Differential Drive Model
-        # self.differential_drive = DifferentialDrive(
-        #     x0_initial=x0
-        # )
+        # RaceCar  Model
+        self.racecar = RacecarModel(x0, L=0.325, dt=self.dt)
 
         # Export the Casadi Model
         self.model = export_casadi_model()
-
-
-        self.obstacle_positions = obstacle_positions
-        self.obstacle_radii = obstacle_radii
-        self.safe_distance = safe_distance
-
 
         # Create the ACADOS solver
         self.mpc_solver, self.mpc = self.create_mpc_solver(x0)
@@ -146,13 +161,11 @@ class MPCController:
         nu = model.u.size()[0]
         ny = nx + nu
         ny_e = nx
-        ny_p = model.p.size()[0]
 
         # set dimensions
         mpc.dims.N = self.N
         mpc.dims.nx = nx
         mpc.dims.nu = nu
-        mpc.dims.np = ny_p
 
         # Set cost
         Q_mat = self.state_cost_matrix
@@ -186,10 +199,9 @@ class MPCController:
             mpc.cost.W = block_diag(Q_mat, R_mat)
             mpc.cost.W_e = Q_mat_e
 
+        
+
         # Set constraints
-
-        mpc.constraints.x0  = x0
-
         mpc.constraints.lbx = self.state_constraints['lbx']
         mpc.constraints.ubx = self.state_constraints['ubx']
         mpc.constraints.idxbx = np.arange(nx)
@@ -197,6 +209,8 @@ class MPCController:
         mpc.constraints.lbx_e = self.state_constraints['lbx']
         mpc.constraints.ubx_e = self.state_constraints['ubx']
         mpc.constraints.idxbx_e = np.arange(nx)
+
+        mpc.constraints.x0  = x0
 
         mpc.constraints.lbu = self.control_constraints['lbu']
         mpc.constraints.ubu = self.control_constraints['ubu']
@@ -219,23 +233,20 @@ class MPCController:
         for i in range(num_obstacles):
             mpc.constraints.lh[i] = (self.obstacle_radii[i] + self.safe_distance)**2
 
-
         # Set solver options
-        mpc.solver_options.qp_solver = 'FULL_CONDENSING_HPIPM'
+        mpc.solver_options.qp_solver = 'PARTIAL_CONDENSING_HPIPM'
         mpc.solver_options.hessian_approx = 'GAUSS_NEWTON'
         mpc.solver_options.integrator_type = 'ERK'
         mpc.solver_options.nlp_solver_type = 'SQP_RTI'
         mpc.solver_options.sim_method_num_stages = 4
         mpc.solver_options.sim_method_num_steps = 3
-        mpc.solver_options.nlp_solver_max_iter = 100
-        mpc.solver_options.qp_solver_cond_N = self.N
 
         # Set prediction horizons
         mpc.solver_options.tf = self.Ts
 
         try:
             print("Creating MPC solver...")
-            mpc_solver = AcadosOcpSolver(mpc, json_file='mpc_differential_drive.json')
+            mpc_solver = AcadosOcpSolver(mpc, json_file='race_car_obstacle_mpc.json')
             print("MPC solver created successfully.")
             return mpc_solver, mpc
         except Exception as e:
@@ -250,18 +261,19 @@ class MPCController:
 
         # Set simulation options
         sim.solver_options.T = self.dt
-        sim.solver_options.integrator_type = 'ERK'
         sim.solver_options.num_stages = 4
         sim.solver_options.num_steps = 3
 
         try:
             print("Creating Sim solver...")
-            sim_solver = AcadosSimSolver(sim, json_file='sim_differential_drive.json')
+            sim_solver = AcadosSimSolver(sim, json_file='race_car_obstacle_sim.json')
             print("Sim solver created successfully.")
             return sim_solver
         except Exception as e:
             print("Error creating Sim solver:", e)
             raise
+
+
 
     def solve_mpc(self, x0: np.ndarray,
                         simX: np.ndarray,
@@ -316,29 +328,25 @@ class MPCController:
 
         return simX, simU
     
-
-    def runge_kutta(self, f, x, u, dt):
+    def runge_kutta(self, f: np.ndarray, x: np.ndarray, u: np.ndarray, dt: float) -> np.ndarray:
+        """
+        Compute the state update using the Runge-Kutta method.
+        """
 
         k1 = f(x, u)
         k2 = f(x + 0.5 * dt * k1, u)
         k3 = f(x + 0.5 * dt * k2, u)
         k4 = f(x + dt * k3, u)
+
         return x + dt / 6 * (k1 + 2*k2 + 2*k3 + k4)
-        
-    def differential_drive(self, x0, u):
-
-        dx = u[0] * np.cos(x0[2])
-        dy = u[0] * np.sin(x0[2])
-        dyaw = u[1]
-
-        return np.array([dx, dy, dyaw])
     
+
     def update_stateRungeKutta(self, x0: np.ndarray, u: np.ndarray) -> np.ndarray:
         """
         Use the Runge-Kutta method to update the state based on the current state and control inputs.
         """
 
-        x1 = self.runge_kutta(self.differential_drive, x0, u, self.dt)
+        x1 = self.runge_kutta(self.racecar.forward_kinematic, x0, u, self.dt)
         return x1
 
 
@@ -351,67 +359,76 @@ class MPCController:
         self.sim_solver.set("u", u)
         status = self.sim_solver.solve()
 
-
         if status != 0:
             raise Exception(f'Simulation failed with status {status}')
 
         x1 = self.sim_solver.get('x')
         return x1
-
+    
+def key_listener():
+    """
+    Simple key listener function to detect when 'Q' is pressed.
+    """
+    import msvcrt  # Windows only
+    if msvcrt.kbhit():
+        key = msvcrt.getch()
+        if key == b'q' or key == b'Q':
+            return True
+    return False
 
 if __name__ == "__main__":
-    # Initialize the MPC Controller     
-    ## State and Control
-    state_init = np.array([0.0, 0.0, 0.0])
+    # Initialize PyBullet
+    p.connect(p.GUI)
+    p.setAdditionalSearchPath(pybullet_data.getDataPath())
+    p.setGravity(0, 0, -9.81)
+
+    # Load the plane and the race car
+    plane_id = p.loadURDF("plane.urdf")
+    start_pos = [0, 0, 0.1]
+    start_orientation = p.getQuaternionFromEuler([0, 0, 0])
+    car_id = p.loadURDF("racecar/racecar.urdf", start_pos, start_orientation)
+
+    # Get the joint information
+    num_joints = p.getNumJoints(car_id)
+    wheel_joints = [
+        p.getJointInfo(car_id, i)[0] for i in range(num_joints)
+        if p.getJointInfo(car_id, i)[1].decode('utf-8') in [
+            'left_rear_wheel_joint', 'right_rear_wheel_joint',
+            'left_front_wheel_joint', 'right_front_wheel_joint'
+        ]
+    ]
+
+    steering_joints = [
+        p.getJointInfo(car_id, i)[0] for i in range(num_joints)
+        if p.getJointInfo(car_id, i)[1].decode('utf-8') in [
+            'left_steering_hinge', 'right_steering_hinge'
+        ]
+    ]
+
+    # Set up the MPC controller
+    state_init = np.array([0.0, 0.0, 0.0, 0.0])
     control_init = np.array([0.0, 0.0])
 
-    ## Current State and Control
-    state_current = state_init
-    control_current = control_init
-
     ## Cost Matrices
-    state_cost_matrix = np.diag([750.0, 750.0, 900.0])
-    control_cost_matrix = np.diag([1, 1])
-    terminal_cost_matrix = np.diag([750.0, 750.0, 900.0])
+    state_cost_matrix = np.diag([30.0, 30.0, 50.0, 50.0]) 
+    control_cost_matrix = np.diag([0.01, 0.01])                
+    terminal_cost_matrix = np.diag([30.0, 30.0, 50.0, 50.0]) 
 
     ## Constraints
-    state_lower_bound = np.array([-10.0, -10.0, -3.14])
-    state_upper_bound = np.array([10.0, 10.0, 3.14])
-    control_lower_bound = np.array([-30.0, -31.4])
-    control_upper_bound = np.array([30.0, 31.4])
+    state_lower_bound = np.array([-5.0, -5.0, -np.pi, -10.0])
+    state_upper_bound = np.array([5.0, 5.0, np.pi, 10.0])
+    control_lower_bound = np.array([-5.0, -3.0])  
+    control_upper_bound = np.array([5.0, 3.0])
 
-    # Define multiple obstacles
-    obstacle_positions = np.array([
-        [2.0, 1.0],  # Obstacle 1 position (x, y)
-        [3.0, 3.0],  # Obstacle 2 position (x, y)
-        [2.0, 6.0]   # Obstacle 3 position (x, y)
-    ])
 
-    # Define obstacle velocities
-    obstacle_velocities = 10.0*np.array([
-        [0.3, .6],   # Velocity of obstacle 1 (vx, vy)
-        [0.6, 0.],  # Velocity of obstacle 2 (vx, vy)
-        [0.5, 0.1]    # Velocity of obstacle 3 (vx, vy)
-    ])
+    obstacle_positions = np.array([[2.0, 2.0], [4.0, 4.0]])  
+    obstacle_radii = np.array([0.5, 0.5])
+    safe_distance = 0.2
+    N = 10
+    dt = 0.01
+    Ts = .5
 
-    obstacle_radii = np.array([0.5, 0.2, 0.4])  # Radii of the obstacles
-    safe_distance = 0.3
-
-    # Simulation
-    simulation = DifferentialSimulation()
-
-    ## Prediction Horizon
-    N = 20
-    sampling_time = 0.01
-    Ts = 0.5
-    Tsim = int(N/sampling_time)
-
-    ## Tracks history
-    xs = [state_init.copy()]
-    us = []
-
-    # MPC modules
-    mpc = MPCController(
+    mpc_controller = MPCController(
         x0=state_init,
         u0=control_init,
         state_cost_matrix=state_cost_matrix,
@@ -425,97 +442,68 @@ if __name__ == "__main__":
         obstacle_radii=obstacle_radii,
         safe_distance=safe_distance,
         N=N,
-        dt=sampling_time,
+        dt=dt,
         Ts=Ts,
-        cost_type='LINEAR_LS'
+        cost_type='NONLINEAR_LS'
     )
 
-    # Set up the ffmpeg writer
-    Writer = animation.writers['ffmpeg']
-    writer = Writer(fps=15, metadata=dict(artist='Me'), bitrate=1800)
-
-
-    # Get the optimal state and control trajectories
-    simX = np.zeros((mpc.mpc.dims.N+1, mpc.mpc.dims.nx))
-    simU = np.zeros((mpc.mpc.dims.N, mpc.mpc.dims.nu))
-
-    fig, ax = plt.subplots(figsize=(8, 8))
-
-    differential_robot = DiffSimulation()
+    # Enable real-time simulation
+    p.setRealTimeSimulation(1)
 
     # Simulation loop
-    def animate(step):
-        global state_current, simX, simU, xs, us, obstacle_positions
-        try:
-            # Determine the reference point from the goal trajectory
-            state_ref = np.array([6.0, 6.0, 0.0])
-            control_ref = np.array([30.0, 1.57])
-            yref = np.concatenate([state_ref, control_ref])
-            yref_N = state_ref  # Terminal state reference
+    velocity = 0.0
 
+    simX = np.zeros((mpc_controller.N + 1, mpc_controller.model.x.size()[0]))
+    simU = np.zeros((mpc_controller.N, mpc_controller.model.u.size()[0]))
 
-            simX, simU = mpc.solve_mpc(state_current, simX, simU, yref, yref_N, obstacle_positions)
+    goal_position = np.array([1.0, 0.0])  # Example goal position
+    goal_threshold = 0.1  # Threshold distance to consider the goal reached
 
-            # Get the first control input from the optimal solution
-            u = simU[0, :]
+    while not terminate_simulation:
+        # Get the current state of the race car
+        pos, ori = p.getBasePositionAndOrientation(car_id)
+        vel, ang_vel = p.getBaseVelocity(car_id)
+        euler = p.getEulerFromQuaternion(ori)
+        yaw = euler[2]
+        state_current = np.array([pos[0], pos[1], yaw, vel[0]])
 
-            print('Control:', u)
-            print('State:', state_current)
+        # Check if the goal is reached
+        if np.linalg.norm(state_current[:2] - goal_position) < goal_threshold:
+            print("Goal reached")
+            # break
 
-            # Apply the control input to the system
-            x1 = mpc.update_stateRungeKutta(state_current, u)
+        # Get the reference trajectory and control input
+        state_ref = np.array([5.0, 0.0, 1.57, 0.0]) 
+        control_ref = np.array([5.0, 1.0]) 
+        yref = np.concatenate((state_ref, control_ref))
+        yref_N = state_ref
 
-            # Update obstacle positions based on their velocities
-            obstacle_positions[:] += obstacle_velocities * sampling_time
+        # Solve the MPC problem
+        simX, simU = mpc_controller.solve_mpc(state_current, simX, simU, yref, yref_N, obstacle_positions)
 
-            xs.append(state_current)
-            us.append(u)
+        # Get the optimal control input
+        control_input = simU[0, :]
 
-            # Update state
-            state_current = x1
+        # Apply the control input to the race car
+        target_acceleration = control_input[0]
+        target_steering = control_input[1]
 
-            # Clear the previous plot
-            ax.clear()
+        # Update the velocity based on the acceleration
+        velocity += target_acceleration * dt
 
-            # Plot the race car
-            plot_arrow(state_current[0], state_current[1], state_current[2], length=0.5, width=0.2, fc="r", ec="k")
-            differential_robot.generate_each_wheel_and_draw(state_current[0], state_current[1], state_current[2])
-            
+        # Apply the wheel velocities to the rear wheels
+        for j in wheel_joints:
+            p.setJointMotorControl2(car_id, j, p.VELOCITY_CONTROL, targetVelocity=velocity, force=10)
 
-            # Plot the goal point
-            ax.plot(state_ref[0], state_ref[1], 'bo', markersize=10)
+        # Apply the steering angles to the front wheels
+        for j in steering_joints:
+            p.setJointMotorControl2(car_id, j, p.POSITION_CONTROL, targetPosition=target_steering)
 
-            # Plot the obstacles
-            for obstacle_pos, obstacle_radius in zip(obstacle_positions, obstacle_radii):
-                obstacle = plt.Circle(obstacle_pos, obstacle_radius, color='b', alpha=0.7)
-                ax.add_patch(obstacle)
+        print(f"State = {state_current}, Control = {control_input}\n")
 
-            # Plot the race car's trajectory
-            xs_array = np.array(xs)
-            ax.plot(xs_array[:, 0], xs_array[:, 1], 'r-', linewidth=1.5)
+        # Step the simulation
+        p.stepSimulation()
+        time.sleep(dt)
 
-            # Plot the predicted trajectory using dot stars
-            ax.plot(simX[:, 0], simX[:, 1], 'g*', markersize=8)
-
-            # Set plot limits and labels
-            ax.set_xlim(-2, 10)
-            ax.set_ylim(-2, 10)
-            ax.set_xlabel('X')
-            ax.set_ylabel('Y')
-            ax.set_title('Race Car Obstacle Avoidance')
-
-            # Return the updated objects
-            return ax
-
-        except Exception as e:
-            print("Error in MPC solve step:", e)
-            return None
-
-    # Create the animation
-    ani = animation.FuncAnimation(fig, animate, frames=Tsim, interval=100, blit=False)
-
-    # Save the animation as an MP4 file
-    ani.save('differential_drive_obstacle_dynamics.mp4', writer='ffmpeg', fps=15)
-
-    # Display the plot
-    plt.show()
+    # Disconnect from PyBullet
+    p.disconnect()

@@ -24,7 +24,7 @@ def plot_arrow(x, y, yaw, length=0.05, width=0.3, fc="b", ec="k"):
 
 def export_casadi_model():
 
-    L = 2.5
+    L = 0.325
     ## Define the states
     x = ca.SX.sym('x')
     y = ca.SX.sym('y')
@@ -64,7 +64,7 @@ def export_casadi_model():
     model.x = states
     model.u = controls
     model.z = []
-    model.p = []
+    model.p = ca.SX.sym('p', 6)
     model.xdot = dae
     model.f_expl_expr = f_expl
     model.f_impl_expr = f_impl
@@ -136,7 +136,7 @@ class MPCController:
         self.mpc_solver, self.mpc = self.create_mpc_solver(x0)
 
         # Create the ACADOS simulator
-        self.sim_solver = self.create_sim_solver()
+        # self.sim_solver = self.create_sim_solver()
 
     def create_mpc_solver(self, x0: np.ndarray) -> Tuple[AcadosOcpSolver, AcadosOcp]:
         mpc = AcadosOcp()
@@ -170,8 +170,10 @@ class MPCController:
             mpc.cost.Vx = Vx
             mpc.cost.Vx_e = np.eye(nx)
             Vu = np.zeros((ny, nu))
-            Vu[-nu:, -nu:] = np.eye(nu)
+            Vu[nx : nx + nu, 0:nu] = np.eye(nu)
             mpc.cost.Vu = Vu
+            mpc.cost.yref = np.zeros((ny, ))
+            mpc.cost.yref_e = np.zeros((ny_e, ))
 
         elif self.cost_type == 'NONLINEAR_LS':
             mpc.cost.cost_type = 'NONLINEAR_LS'
@@ -199,21 +201,22 @@ class MPCController:
         mpc.constraints.ubu = self.control_constraints['ubu']
         mpc.constraints.idxbu = np.arange(nu)
 
-        # Initialize obstacle avoidance constraints
+        # Define obstacle avoidance constraints
         num_obstacles = len(self.obstacle_positions)
         mpc.constraints.lh = np.zeros((num_obstacles,))
-        finite_upper_bound = 500
-        mpc.constraints.uh = np.full((num_obstacles,), finite_upper_bound)
+        mpc.constraints.uh = np.full((num_obstacles,), 1e8)
 
-        # Define nonlinear constraint expressions
-        mpc.model.con_h_expr = ca.vertcat(
-            (model.x[0] - self.obstacle_positions[0])**2 + (model.x[1] - self.obstacle_positions[1])**2
-        )
+        obstacle_pos_sym = ca.SX.sym('obstacle_pos', 2, num_obstacles)
 
-        # Set obstacle avoidance constraints
-        mpc.constraints.lh =  np.array([(self.obstacle_radii + self.safe_distance)**2])
-        mpc.constraints.uh = np.array([finite_upper_bound])
+        mpc.model.p = ca.vertcat(mpc.model.p, ca.vec(obstacle_pos_sym))
+        mpc.model.con_h_expr = ca.vertcat(*[
+            (model.x[0] - obstacle_pos_sym[0, i])**2 + (model.x[1] - obstacle_pos_sym[1, i])**2 - (self.obstacle_radii[i] + self.safe_distance)**2
+            for i in range(num_obstacles)
+        ])
+        mpc.parameter_values = np.zeros(mpc.model.p.size()[0])
 
+        for i in range(num_obstacles):
+            mpc.constraints.lh[i] = (self.obstacle_radii[i] + self.safe_distance)**2
 
 
         # Set solver options
@@ -253,16 +256,15 @@ class MPCController:
             print("Sim solver created successfully.")
             return sim_solver
         except Exception as e:
-            print("Error creating Sim solver:", e)
-            raise
-
+            print("Error creating Sim solver:", e)        # External cost function
 
 
     def solve_mpc(self, x0: np.ndarray,
                         simX: np.ndarray,
                         simU: np.ndarray,
                         yref: np.ndarray,
-                        yref_N: np.ndarray
+                        yref_N: np.ndarray,
+                        obstacle_positions: np.ndarray,
                         ) -> Tuple[np.ndarray, np.ndarray]:
         """
         Solve the MPC problem with the given initial state.
@@ -278,6 +280,24 @@ class MPCController:
         self.mpc_solver.set(0, "lbx", x0)
         self.mpc_solver.set(0, "ubx", x0)
 
+        # Set the obstacle positions
+        param_values = np.concatenate((np.zeros(6), obstacle_positions.flatten()))
+
+        # Set the obstacle positions in the solver
+        for i in range(self.N+1):
+            self.mpc_solver.set(i, 'p', param_values)
+
+        # Set reference trajectory
+        for i in range(self.mpc.dims.N):
+            self.mpc_solver.set(i, "yref", yref)
+        self.mpc_solver.set(self.mpc.dims.N, "yref", yref_N)
+
+        # Warm up the solver
+        for i in range(self.N):
+            self.mpc_solver.set(i, "x", simX[i, :])
+            self.mpc_solver.set(i, "u", simU[i, :])
+        self.mpc_solver.set(self.N, "x", simX[self.N, :])
+
         # Solve the MPC problem
         status = self.mpc_solver.solve()
 
@@ -286,16 +306,12 @@ class MPCController:
 
         for i in range(self.mpc.dims.N):
             self.mpc_solver.set(i, "yref", yref)
-
             simX[i, :] = self.mpc_solver.get(i, "x")
-            simU[i, :] = self.mpc_solver.get(i, "u")  
-
-        # Update the initial state in the solver
-        self.mpc_solver.set(self.mpc.dims.N, "yref", yref_N)
-
+            simU[i, :] = self.mpc_solver.get(i, "u")
         simX[self.mpc.dims.N, :] = self.mpc_solver.get(self.mpc.dims.N, "x")
 
         return simX, simU
+    
     
     def runge_kutta(self, f: np.ndarray, x: np.ndarray, u: np.ndarray, dt: float) -> np.ndarray:
         """
@@ -424,8 +440,12 @@ if __name__ == "__main__":
     us = []
     
 
-    obstacle_position = np.array([2.0, 1.0]) 
-    obstacle_radius = 0.2
+    obstacle_positions = np.array([
+        [2.0, 1.0],  
+        [3.0, 3.0],  
+        [2.0, 6.0]  
+    ])
+    obstacle_radii = np.array([0.5, 0.2, 0.4])  
     safe_distance = 0.2
 
 
@@ -440,8 +460,8 @@ if __name__ == "__main__":
         state_upper_bound=state_upper_bound,
         control_lower_bound=control_lower_bound,
         control_upper_bound=control_upper_bound,
-        obstacle_positions=obstacle_position,
-        obstacle_radii=obstacle_radius,
+        obstacle_positions=obstacle_positions,
+        obstacle_radii=obstacle_radii,
         safe_distance=safe_distance,
         N=N,
         dt=sampling_time,
@@ -467,7 +487,7 @@ if __name__ == "__main__":
             yref = np.concatenate([state_ref, control_ref])
             yref_N = state_ref  # Terminal state reference
 
-            simX, simU = mpc.solve_mpc(state_current, simX, simU, yref, yref_N)
+            simX, simU = mpc.solve_mpc(state_current, simX, simU, yref, yref_N, obstacle_positions)
 
             # Get the first control input from the optimal solution
             u = simU[0, :]
@@ -476,8 +496,8 @@ if __name__ == "__main__":
             print('State:', state_current)
 
             # Apply the control input to the system
-            # x1 = mpc.update_stateRungeKutta(state_current, u)
-            x1 = mpc.update_state(state_current, u)
+            x1 = mpc.update_stateRungeKutta(state_current, u)
+            # x1 = mpc.update_state(state_current, u)
 
             xs.append(state_current)
             us.append(u)
@@ -495,7 +515,7 @@ if __name__ == "__main__":
             ax.plot(state_ref[0], state_ref[1], 'ro', markersize=10)
 
             # Plot the obstacle
-            obstacle = plt.Circle(obstacle_position, obstacle_radius, color='g', alpha=0.7)
+            obstacle = plt.Circle(obstacle_positions, obstacle_radii, color='g', alpha=0.7)
             ax.add_patch(obstacle)
 
             # Plot the race car's trajectory

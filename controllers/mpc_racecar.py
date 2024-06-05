@@ -14,7 +14,7 @@ from typing import Tuple
 
 def export_casadi_model():
 
-    L = 2.5
+    L = 0.325
     ## Define the states
     x = ca.SX.sym('x')
     y = ca.SX.sym('y')
@@ -110,7 +110,7 @@ class MPCController:
         self.Ts = Ts
 
         # RaceCar  Model
-        self.racecar = RacecarModel(x0, L=2.5, dt=self.dt)
+        self.racecar = RacecarModel(x0, L=0.325, dt=self.dt)
 
         # Export the Casadi Model
         self.model = export_casadi_model()
