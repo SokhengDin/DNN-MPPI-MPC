@@ -231,7 +231,7 @@ class MPCController:
         mpc.solver_options.qp_solver_cond_N = self.N
 
         # Set prediction horizons
-        mpc.solver_options.tf = self.N * self.dt
+        mpc.solver_options.tf = self.Ts
 
         try:
             print("Creating MPC solver...")
@@ -305,8 +305,8 @@ class MPCController:
         # Solve the MPC problem
         status = self.mpc_solver.solve()
 
-        if status != 0:
-            raise Exception(f'Acados returned status {status}')
+        # if status != 0:
+        #     raise Exception(f'Acados returned status {status}')
 
         for i in range(self.mpc.dims.N):
             self.mpc_solver.set(i, "yref", yref)

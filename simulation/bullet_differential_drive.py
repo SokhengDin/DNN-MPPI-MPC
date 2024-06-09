@@ -5,8 +5,10 @@ import pybullet as p
 import pybullet_data
 import numpy as np
 import time
+import matplotlib.pyplot as plt
 from controllers.mpc_differential_drive_obstacle_dynamic import MPCController
 from typing import Tuple
+from mpl_toolkits.mplot3d import Axes3D
 
 def plot_arrow(x, y, yaw, length=0.5, width=0.1, fc="b", ec="k"):
     p.addUserDebugLine(
@@ -16,16 +18,49 @@ def plot_arrow(x, y, yaw, length=0.5, width=0.1, fc="b", ec="k"):
         lineWidth=3
     )
 
+# Initialize Matplotlib figure
+fig = plt.figure()
+ax = fig.add_subplot(111, projection='3d')
+plt.ion()
+plt.show()
+
+# Function to plot the cube
+def plot_cube(ax, position, size):
+    r = [-size/2, size/2]
+    X, Y = np.meshgrid(r, r)
+    ax.plot_surface(X + position[0], Y + position[1], size/2 + position[2], color='red')
+    ax.plot_surface(X + position[0], Y + position[1], -size/2 + position[2], color='red')
+    ax.plot_surface(X + position[0], size/2 + position[1], Y + position[2], color='red')
+    ax.plot_surface(X + position[0], -size/2 + position[1], Y + position[2], color='red')
+    ax.plot_surface(size/2 + position[0], X + position[1], Y + position[2], color='red')
+    ax.plot_surface(-size/2 + position[0], X + position[1], Y + position[2], color='red')
+
+# def inverse_kinematics(v, omega):
+#     # Wheel base distances
+#     wheel_base_x = 0.512
+#     wheel_base_y = 0.5708
+
+#     # Calculate wheel velocities
+#     v_front_left = v + omega * (wheel_base_x + wheel_base_y) / 2
+#     v_front_right = v - omega * (wheel_base_x - wheel_base_y) / 2
+#     v_rear_left = v + omega * (wheel_base_x - wheel_base_y) / 2
+#     v_rear_right = v - omega * (wheel_base_x + wheel_base_y) / 2
+
+#     return v_front_left, v_front_right, v_rear_left, v_rear_right
+
 def inverse_kinematics(v, omega):
-    # Wheel base distances
-    wheel_base_x = 0.512
-    wheel_base_y = 0.5708
+    # Distance between wheels (wheelbase)
+    L = 0.5708  # meters
 
     # Calculate wheel velocities
-    v_front_left = v + omega * (wheel_base_x + wheel_base_y) / 2
-    v_front_right = v - omega * (wheel_base_x - wheel_base_y) / 2
-    v_rear_left = v + omega * (wheel_base_x + wheel_base_y) / 2
-    v_rear_right = v - omega * (wheel_base_x - wheel_base_y) / 2
+    v_left = v - (omega * L / 2)
+    v_right = v + (omega * L / 2)
+
+    # Assign velocities to each wheel
+    v_front_left = v_left
+    v_rear_left = v_left
+    v_front_right = v_right
+    v_rear_right = v_right
 
     return v_front_left, v_front_right, v_rear_left, v_rear_right
 
@@ -43,7 +78,10 @@ cube_size = 0.5
 cube_mass = 1.0
 cube_visual_shape_id = p.createVisualShape(shapeType=p.GEOM_BOX, halfExtents=[cube_size]*3, rgbaColor=[1, 0, 0, 1])
 cube_collision_shape_id = p.createCollisionShape(shapeType=p.GEOM_BOX, halfExtents=[cube_size]*3)
-cube_id = p.createMultiBody(baseMass=cube_mass, baseCollisionShapeIndex=cube_collision_shape_id, baseVisualShapeIndex=cube_visual_shape_id, basePosition=[3, 0, cube_size])
+cube_id1 = p.createMultiBody(baseMass=cube_mass, baseCollisionShapeIndex=cube_collision_shape_id, baseVisualShapeIndex=cube_visual_shape_id, basePosition=[3, 3, cube_size])
+cube_id2 = p.createMultiBody(baseMass=cube_mass, baseCollisionShapeIndex=cube_collision_shape_id, baseVisualShapeIndex=cube_visual_shape_id, basePosition=[6.5, 2.8, cube_size])
+cude_id3 = p.createMultiBody(baseMass=cube_mass, baseCollisionShapeIndex=cube_collision_shape_id, baseVisualShapeIndex=cube_visual_shape_id, basePosition=[5.5, 5.5, cube_size])
+
 
 # Enable GPU acceleration and set real-time simulation
 p.setRealTimeSimulation(1)
@@ -63,22 +101,22 @@ num_iterations = 1000
 state_init = np.array([0.0, 0.0, 0.0])
 control_init = np.array([0.0, 0.0])
 
-state_cost_matrix = np.diag([750.0, 750.0, 900])
+state_cost_matrix = np.diag([9.0, 6.0, 45])
 control_cost_matrix = np.diag([1, 0.1])
-terminal_cost_matrix = np.diag([750.0, 750.0, 900])
+terminal_cost_matrix = np.diag([9.0, 6.0, 45])
 
-state_lower_bound = np.array([-10.0, -10.0, -3.14])
-state_upper_bound = np.array([10.0, 10.0, 3.14])
+state_lower_bound = np.array([-100.0, -100.0, -3.14])
+state_upper_bound = np.array([100.0, 100.0, 3.14])
 control_lower_bound = np.array([-10, -3.14])
 control_upper_bound = np.array([10, 3.14])
 
-obstacle_positions = np.array([[-10.0, 0.0]])  # Cube position
-obstacle_radii = np.array([cube_size])
-safe_distance = 0.5
+obstacle_positions = np.array([[3.0, 3.0], [6.5, 2.8], [6.0, 5.5]]) 
+obstacle_radii = np.array([cube_size, cube_size, cube_size])
+safe_distance = cube_size + 0.1
 
-N = 10
+N = 100
 dt = 0.01
-Ts = 1.0
+Ts = 0.5    
 
 mpc = MPCController(
     x0=state_init,
@@ -100,10 +138,22 @@ mpc = MPCController(
 )
 
 # Get the joint indices for the wheel joints
-joint_indices = [
-    p.getJointInfo(robot_id, i)[0] for i in range(p.getNumJoints(robot_id))
-    if "wheel" in str(p.getJointInfo(robot_id, i)[1])
-]
+num_joints = p.getNumJoints(robot_id)
+wheel_joints = []
+joints_list = ['front_left_wheel', 'front_right_wheel', 'rear_left_wheel', 'rear_right_wheel']
+
+for i in range(num_joints):
+    joint_info = p.getJointInfo(robot_id, i)
+    joint_name = joint_info[1].decode('utf-8')
+
+    # if joint_name == 'front_left_wheel' or joint_name == 'front_right_wheel' or \
+    #     joint_name == 'rear_left_wheel' or joint_name == 'rear_right_wheel':
+    #     wheel_joints.append(i)
+    if joint_name in joints_list:
+        wheel_joints.append(i)
+        print(joint_name)
+
+print("Wheel joints:", wheel_joints)
 
 # Simulation loop
 state_current = state_init
@@ -116,8 +166,8 @@ simU = np.zeros((mpc.mpc.dims.N, mpc.mpc.dims.nu))
 while True:
     try:
         # Get the reference state
-        state_ref = np.array([-3, 2.0, 0.0])
-        control_ref = np.array([2.0, 0.0])
+        state_ref = np.array([5, 10, 1.57])
+        control_ref = np.array([4.0, 1.57])
         yref = np.concatenate([state_ref, control_ref])
         yref_N = state_ref  # Terminal state reference
 
@@ -143,14 +193,26 @@ while True:
         v_front_left, v_front_right, v_rear_left, v_rear_right = inverse_kinematics(v, omega)
 
         # Apply the control input to the Husky robot
-        p.setJointMotorControl2(robot_id, 2, p.VELOCITY_CONTROL, targetVelocity=v_front_left, maxVelocity=10.0)
-        p.setJointMotorControl2(robot_id, 3, p.VELOCITY_CONTROL, targetVelocity=v_front_right, maxVelocity=10.0)
-        p.setJointMotorControl2(robot_id, 4, p.VELOCITY_CONTROL, targetVelocity=v_rear_left, maxVelocity=10.0)
-        p.setJointMotorControl2(robot_id, 5, p.VELOCITY_CONTROL, targetVelocity=v_rear_right, maxVelocity=10.0)
+        p.setJointMotorControl2(robot_id, 2, p.VELOCITY_CONTROL, targetVelocity=v_front_left, maxVelocity=1.0)
+        p.setJointMotorControl2(robot_id, 3, p.VELOCITY_CONTROL, targetVelocity=v_front_right, maxVelocity=1.0)
+        p.setJointMotorControl2(robot_id, 4, p.VELOCITY_CONTROL, targetVelocity=v_rear_left, maxVelocity=1.0)
+        p.setJointMotorControl2(robot_id, 5, p.VELOCITY_CONTROL, targetVelocity=v_rear_right, maxVelocity=1.0)
 
 
         # Step the simulation
         p.stepSimulation()
+
+        # Update the cube's position for plotting
+        cube_pos, _ = p.getBasePositionAndOrientation(cube_id1)
+
+        # Clear the plot and draw the cube at the new position
+        # ax.clear()
+        # plot_cube(ax, cube_pos, cube_size)
+        # ax.set_xlim([-10, 10])
+        # ax.set_ylim([-10, 10])
+        # ax.set_zlim([0, 5])
+        # plt.draw()
+        # plt.pause(0.001)
 
         # Sleep to maintain a consistent simulation rate
         time.sleep(dt)
