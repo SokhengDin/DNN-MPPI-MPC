@@ -245,18 +245,23 @@ class MPCController:
 
         if status != 0:
             raise Exception(f'Acados returned status {status}')
+        
+
+        # Update the initial state in solver
+        self.mpc_solver.set(0, "lbx", x0)
+        self.mpc_solver.set(0, "ubx", x0)
+
+        # Set reference trajectory
+        for i in range(self.mpc.dims.N):
+            self.mpc_solver.set(i, "yref", yref)
+
+        self.mpc_solver.set(self.mpc.dims.N, "yref", yref_N)
 
         for i in range(self.mpc.dims.N):
             self.mpc_solver.set(i, "yref", yref)
 
             simX[i, :] = self.mpc_solver.get(i, "x")
             simU[i, :] = self.mpc_solver.get(i, "u")  
-
-        # Update the initial state in the solver
-        self.mpc_solver.set(self.mpc.dims.N, "yref", yref_N)
-
-        self.mpc_solver.set(0, "lbx", x0)
-        self.mpc_solver.set(0, "ubx", x0)   
 
         simX[self.mpc.dims.N, :] = self.mpc_solver.get(self.mpc.dims.N, "x")
 
@@ -310,10 +315,9 @@ if __name__ == "__main__":
     control_current = control_init
 
     ## Cost Matrices
-    state_cost_matrix = np.diag([100.0, 100.0, 50.0, 20.0]) 
+    state_cost_matrix = np.diag([100.0, 100.0, 5000.0, 2000.0]) 
     control_cost_matrix = np.diag([1.0, 0.1])                
-    terminal_cost_matrix = np.diag([100.0, 100.0, 50.0, 20.0]) 
-
+    terminal_cost_matrix = np.diag([100.0, 100.0, 5000.0, 2000.0]) 
     ## Constraints
     state_lower_bound = np.array([-5.0, -5.0, -np.pi, -10.0])
     state_upper_bound = np.array([5.0, 5.0, np.pi, 10.0])
@@ -328,8 +332,8 @@ if __name__ == "__main__":
 
     ## Prediction Horizon
     N = 50
-    sampling_time = 0.05
-    Ts = 3.0
+    sampling_time = 0.01
+    Ts = 1.0
     Tsim = int(N/sampling_time)
 
     ## Tracks history
@@ -362,10 +366,10 @@ if __name__ == "__main__":
         if step % (1/sampling_time) == 0:
             print('t =', step*sampling_time)
 
-        state_ref = np.array([2.0, 4.0, 0.0, 4.0])  
+        state_ref = np.array([2.0, 4.0, 0.0, 0.0])  
         control_ref = np.array([1.0, 0.5])   
         yref = np.concatenate([state_ref, control_ref])
-        yref_N = np.array([2.0, 4.0, 0.0, 4.0])
+        yref_N = np.array([2.0, 4.0, 0.0, 0.0])
 
         simX, simU = mpc.solve_mpc(state_current, simX, simU, yref, yref_N)
 

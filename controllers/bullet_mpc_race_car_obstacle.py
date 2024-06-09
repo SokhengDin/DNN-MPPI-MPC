@@ -141,7 +141,7 @@ class MPCController:
         self.Ts = Ts
 
         # RaceCar  Model
-        self.racecar = RacecarModel(x0, L=0.325, dt=self.dt)
+        self.racecar = RacecarModel(x0, L=0.325, dt=dt)
 
         # Export the Casadi Model
         self.model = export_casadi_model()
@@ -234,12 +234,14 @@ class MPCController:
             mpc.constraints.lh[i] = (self.obstacle_radii[i] + self.safe_distance)**2
 
         # Set solver options
-        mpc.solver_options.qp_solver = 'PARTIAL_CONDENSING_HPIPM'
+        mpc.solver_options.qp_solver = 'FULL_CONDENSING_HPIPM'
         mpc.solver_options.hessian_approx = 'GAUSS_NEWTON'
         mpc.solver_options.integrator_type = 'ERK'
         mpc.solver_options.nlp_solver_type = 'SQP_RTI'
         mpc.solver_options.sim_method_num_stages = 4
         mpc.solver_options.sim_method_num_steps = 3
+        mpc.solver_options.nlp_solver_max_iter = 100
+        mpc.solver_options.qp_solver_cond_N = self.N
 
         # Set prediction horizons
         mpc.solver_options.tf = self.Ts
@@ -318,7 +320,8 @@ class MPCController:
         status = self.mpc_solver.solve()
 
         if status != 0:
-            raise Exception(f'Acados returned status {status}')
+            # raise Exception(f'Acados returned status {status}')
+            print("Solver failed with status: ", status)
 
         for i in range(self.mpc.dims.N):
             self.mpc_solver.set(i, "yref", yref)
@@ -360,7 +363,8 @@ class MPCController:
         status = self.sim_solver.solve()
 
         if status != 0:
-            raise Exception(f'Simulation failed with status {status}')
+            # raise Exception(f'Simulation failed with status {status}')
+            print("Solver failed with status: ", status)
 
         x1 = self.sim_solver.get('x')
         return x1
@@ -386,47 +390,44 @@ if __name__ == "__main__":
     plane_id = p.loadURDF("plane.urdf")
     start_pos = [0, 0, 0.1]
     start_orientation = p.getQuaternionFromEuler([0, 0, 0])
-    car_id = p.loadURDF("racecar/racecar.urdf", start_pos, start_orientation)
+    car_id = p.loadURDF("/home/eroxii/ocp_ws/RL-MPPI-MPC/urdf/racecar/racecar.urdf", start_pos, start_orientation)
 
     # Get the joint information
     num_joints = p.getNumJoints(car_id)
-    wheel_joints = [
-        p.getJointInfo(car_id, i)[0] for i in range(num_joints)
-        if p.getJointInfo(car_id, i)[1].decode('utf-8') in [
-            'left_rear_wheel_joint', 'right_rear_wheel_joint',
-            'left_front_wheel_joint', 'right_front_wheel_joint'
-        ]
-    ]
+    steering_joints = []
+    drive_joints = []
 
-    steering_joints = [
-        p.getJointInfo(car_id, i)[0] for i in range(num_joints)
-        if p.getJointInfo(car_id, i)[1].decode('utf-8') in [
-            'left_steering_hinge', 'right_steering_hinge'
-        ]
-    ]
+    for i in range(num_joints):
+        joint_info = p.getJointInfo(car_id, i)
+        joint_name = joint_info[1].decode('utf-8')
+
+        if 'steering' in joint_name:
+            steering_joints.append(i)
+        elif joint_name == 'left_rear_wheel_joint' or joint_name == 'right_rear_wheel_joint' or \
+            joint_name == 'left_front_wheel_joint' or joint_name == 'right_front_wheel_joint':
+            drive_joints.append(i)
 
     # Set up the MPC controller
     state_init = np.array([0.0, 0.0, 0.0, 0.0])
     control_init = np.array([0.0, 0.0])
 
     ## Cost Matrices
-    state_cost_matrix = np.diag([30.0, 30.0, 50.0, 50.0]) 
-    control_cost_matrix = np.diag([0.01, 0.01])                
-    terminal_cost_matrix = np.diag([30.0, 30.0, 50.0, 50.0]) 
+    state_cost_matrix = np.diag([250.0, 250.0, 950.0, 450.0]) 
+    control_cost_matrix = np.diag([0.1, 0.01])                
+    terminal_cost_matrix = np.diag([250.0, 250.0, 950.0, 450.0]) 
 
     ## Constraints
-    state_lower_bound = np.array([-5.0, -5.0, -np.pi, -10.0])
-    state_upper_bound = np.array([5.0, 5.0, np.pi, 10.0])
-    control_lower_bound = np.array([-5.0, -3.0])  
-    control_upper_bound = np.array([5.0, 3.0])
+    state_lower_bound = np.array([-50.0, -50.0, -np.pi, -100.0])
+    state_upper_bound = np.array([50.0, 50.0, np.pi, 100.0])
+    control_lower_bound = np.array([-50.0, -np.pi])  
+    control_upper_bound = np.array([50.0, np.pi])
 
-
-    obstacle_positions = np.array([[2.0, 2.0], [4.0, 4.0]])  
+    obstacle_positions = np.array([[-2.0, -2.0], [-4.0, 4.0]])  
     obstacle_radii = np.array([0.5, 0.5])
     safe_distance = 0.2
     N = 10
     dt = 0.01
-    Ts = .5
+    Ts = 1.5
 
     mpc_controller = MPCController(
         x0=state_init,
@@ -456,7 +457,7 @@ if __name__ == "__main__":
     simX = np.zeros((mpc_controller.N + 1, mpc_controller.model.x.size()[0]))
     simU = np.zeros((mpc_controller.N, mpc_controller.model.u.size()[0]))
 
-    goal_position = np.array([1.0, 0.0])  # Example goal position
+    goal_position = np.array([1.0, 1.0])  # Example goal position
     goal_threshold = 0.1  # Threshold distance to consider the goal reached
 
     while not terminate_simulation:
@@ -473,8 +474,8 @@ if __name__ == "__main__":
             # break
 
         # Get the reference trajectory and control input
-        state_ref = np.array([5.0, 0.0, 1.57, 0.0]) 
-        control_ref = np.array([5.0, 1.0]) 
+        state_ref = np.array([5.0, 0.0, 0.0, 0.0]) 
+        control_ref = np.array([2.0, 0.0]) 
         yref = np.concatenate((state_ref, control_ref))
         yref_N = state_ref
 
@@ -492,7 +493,7 @@ if __name__ == "__main__":
         velocity += target_acceleration * dt
 
         # Apply the wheel velocities to the rear wheels
-        for j in wheel_joints:
+        for j in drive_joints:
             p.setJointMotorControl2(car_id, j, p.VELOCITY_CONTROL, targetVelocity=velocity, force=10)
 
         # Apply the steering angles to the front wheels

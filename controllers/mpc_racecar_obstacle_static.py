@@ -220,12 +220,14 @@ class MPCController:
 
 
         # Set solver options
-        mpc.solver_options.qp_solver = 'PARTIAL_CONDENSING_HPIPM'
+        mpc.solver_options.qp_solver = 'FULL_CONDENSING_HPIPM'
         mpc.solver_options.hessian_approx = 'GAUSS_NEWTON'
         mpc.solver_options.integrator_type = 'ERK'
         mpc.solver_options.nlp_solver_type = 'SQP_RTI'
         mpc.solver_options.sim_method_num_stages = 4
         mpc.solver_options.sim_method_num_steps = 3
+        mpc.solver_options.nlp_solver_max_iter = 100
+        mpc.solver_options.qp_solver_cond_N = self.N
 
         # Set prediction horizons
         mpc.solver_options.tf = self.Ts
@@ -350,58 +352,6 @@ class MPCController:
         x1 = self.sim_solver.get('x')
         return x1
 
-def animate(i, ax, mpc, state_current, simX, simU, goal_trajectory, obstacle_positions, obstacle_radii, xs, us):
-    # Get the reference goal from the goal trajectory
-    ref_goal = goal_trajectory[i]
-    
-    # Set the reference goal for the MPC problem
-    yref = np.concatenate([ref_goal, np.zeros((mpc.mpc.dims.nu,))])
-    yref_N = ref_goal
-    
-    # Solve MPC problem
-    simX, simU = mpc.solve_mpc(state_current, simX, simU, yref, yref_N)
-    
-    # Get the first control input from the optimal solution
-    u = simU[0, :]
-    
-    # Apply the control input to the system
-    x1 = mpc.update_stateRungeKutta(state_current, u)
-    
-    # Update state
-    state_current[:] = x1
-    
-    # Append current state and control to history
-    xs.append(state_current)
-    us.append(u)
-    
-    # Clear the previous plot
-    ax.clear()
-    
-    # Plot the race car
-    ax.plot(state_current[0], state_current[1], 'ro', markersize=10)
-    
-    # Plot the goal path
-    ax.plot(goal_trajectory[:, 0], goal_trajectory[:, 1], 'b--')
-    
-    # Plot the obstacles
-    for obstacle_pos, obstacle_radius in zip(obstacle_positions, obstacle_radii):
-        obstacle = Circle(obstacle_pos, obstacle_radius, color='g', alpha=0.7)
-        ax.add_patch(obstacle)
-    
-    # Plot the race car's trajectory
-    xs_array = np.array(xs)
-    ax.plot(xs_array[:, 0], xs_array[:, 1], 'r-', linewidth=1.5)
-    
-    # Set plot limits and labels
-    ax.set_xlim(-2, 10)
-    ax.set_ylim(-2, 10)
-    ax.set_xlabel('X')
-    ax.set_ylabel('Y')
-    ax.set_title('Race Car Obstacle Avoidance')
-    
-    # Return the updated objects
-    return ax
-
 
 if __name__ == "__main__":
     # Initialize the MPC Controller
@@ -414,15 +364,15 @@ if __name__ == "__main__":
     control_current = control_init
 
     ## Cost Matrices
-    state_cost_matrix = np.diag([30.0, 30.0, 50.0, 50.0]) 
-    control_cost_matrix = np.diag([0.1, 0.01])                
-    terminal_cost_matrix = np.diag([30.0, 30.0, 50.0, 50.0]) 
+    state_cost_matrix = np.diag([750.0, 750.0, 1500.0, 1500.0]) 
+    control_cost_matrix = np.diag([1, 1])                
+    terminal_cost_matrix = np.diag([750.0, 750.0, 1500.0, 1500.0]) 
 
     ## Constraints
-    state_lower_bound = np.array([-5.0, -5.0, -np.pi, -10.0])
-    state_upper_bound = np.array([5.0, 5.0, np.pi, 10.0])
-    control_lower_bound = np.array([-5.0, -3.0])  
-    control_upper_bound = np.array([5.0, 3.0])
+    state_lower_bound = np.array([-50.0, -50.0, -np.pi, -100.0])
+    state_upper_bound = np.array([50.0, 50.0, np.pi, 100.0])
+    control_lower_bound = np.array([-50.0, -np.pi])  
+    control_upper_bound = np.array([50.0, np.pi])
 
     # RaceCar robot
     raceCar = RacecarModel(
@@ -430,9 +380,9 @@ if __name__ == "__main__":
     )
 
     ## Prediction Horizon
-    N = 10
+    N = 30
     sampling_time = 0.01
-    Ts = 3.0
+    Ts = 1.0
     Tsim = int(N/sampling_time)
 
     ## Tracks history
@@ -482,7 +432,7 @@ if __name__ == "__main__":
 
         try:
             # Determine the reference point from the goal trajectory
-            state_ref = np.array([2.0, 1.0, 0.0, 0.0]) 
+            state_ref = np.array([6.0, 2.0, 0.0, 0.0]) 
             control_ref = np.array([1.0, 0.578])   
             yref = np.concatenate([state_ref, control_ref])
             yref_N = state_ref  # Terminal state reference
@@ -515,8 +465,9 @@ if __name__ == "__main__":
             ax.plot(state_ref[0], state_ref[1], 'ro', markersize=10)
 
             # Plot the obstacle
-            obstacle = plt.Circle(obstacle_positions, obstacle_radii, color='g', alpha=0.7)
-            ax.add_patch(obstacle)
+            for obstacle_pos, obstacle_radius in zip(obstacle_positions, obstacle_radii):
+                obstacle = plt.Circle(obstacle_pos, obstacle_radius, color='g', alpha=0.7)
+                ax.add_patch(obstacle)
 
             # Plot the race car's trajectory
             xs_array = np.array(xs)
@@ -543,4 +494,4 @@ if __name__ == "__main__":
     ani.save('race_car_obstacle_avoidance.mp4', writer='ffmpeg', fps=15)
 
     # Display the plot
-    plt.show()
+    # plt.show()
