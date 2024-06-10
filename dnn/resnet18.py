@@ -2,7 +2,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-
 class BasicBlock(nn.Module):
     expansion = 1
 
@@ -28,7 +27,6 @@ class BasicBlock(nn.Module):
         out += self.shortcut(x)
         out = F.relu(out)
         return out
-
 
 class ResNet(nn.Module):
     def __init__(self, block, num_blocks, input_dim, output_dim):
@@ -61,16 +59,14 @@ class ResNet(nn.Module):
         out = self.layer2(out)
         out = self.layer3(out)
         out = self.layer4(out)
-        out = F.avg_pool1d(out, 4)
+        out = F.avg_pool1d(out, kernel_size=1)  # Adjusted kernel size
         out = out.view(out.size(0), -1)
         out = self.linear(out)
         out = torch.tanh(out)  # Apply tanh activation to the output
         return out
 
-
 def ResNet18(input_dim, output_dim):
     return ResNet(BasicBlock, [2, 2, 2, 2], input_dim, output_dim)
-
 
 if __name__ == "__main__":
     input_dim = 5  # Example input dimension (state + control)

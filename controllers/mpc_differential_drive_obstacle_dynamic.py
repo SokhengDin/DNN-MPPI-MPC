@@ -60,7 +60,7 @@ def export_casadi_model():
     model.x = states
     model.u = controls
     model.z = []
-    model.p = ca.SX.sym('x', 6) 
+    # model.p = ca.SX.sym('x', 12) 
     model.xdot = dae
     model.f_expl_expr = f_expl
     model.f_impl_expr = f_impl
@@ -146,13 +146,13 @@ class MPCController:
         nu = model.u.size()[0]
         ny = nx + nu
         ny_e = nx
-        ny_p = model.p.size()[0]
+        # ny_p = model.p.size()[0]
 
         # set dimensions
         mpc.dims.N = self.N
         mpc.dims.nx = nx
         mpc.dims.nu = nu
-        mpc.dims.np = ny_p
+        # mpc.dims.np = ny_p
 
         # Set cost
         Q_mat = self.state_cost_matrix
@@ -203,21 +203,21 @@ class MPCController:
         mpc.constraints.idxbu = np.arange(nu)
 
         # Define obstacle avoidance constraints
-        num_obstacles = len(self.obstacle_positions)
-        mpc.constraints.lh = np.zeros((num_obstacles,))
-        mpc.constraints.uh = np.full((num_obstacles,), 1e8)
+        # num_obstacles = len(self.obstacle_positions)
+        # mpc.constraints.lh = np.zeros((num_obstacles,))
+        # mpc.constraints.uh = np.full((num_obstacles,), 1e8)
 
-        obstacle_pos_sym = ca.SX.sym('obstacle_pos', 2, num_obstacles)
+        # obstacle_pos_sym = ca.SX.sym('obstacle_pos', 2, num_obstacles)
 
-        mpc.model.p = ca.vertcat(mpc.model.p, ca.vec(obstacle_pos_sym))
-        mpc.model.con_h_expr = ca.vertcat(*[
-            (model.x[0] - obstacle_pos_sym[0, i])**2 + (model.x[1] - obstacle_pos_sym[1, i])**2 - (self.obstacle_radii[i] + self.safe_distance)**2
-            for i in range(num_obstacles)
-        ])
-        mpc.parameter_values = np.zeros(mpc.model.p.size()[0])
+        # mpc.model.p = ca.vertcat(mpc.model.p, ca.vec(obstacle_pos_sym))
+        # mpc.model.con_h_expr = ca.vertcat(*[
+        #     (model.x[0] - obstacle_pos_sym[0, i])**2 + (model.x[1] - obstacle_pos_sym[1, i])**2 - (self.obstacle_radii[i] + self.safe_distance)**2
+        #     for i in range(num_obstacles)
+        # ])
+        # mpc.parameter_values = np.zeros(mpc.model.p.size()[0])
 
-        for i in range(num_obstacles):
-            mpc.constraints.lh[i] = (self.obstacle_radii[i] + self.safe_distance)**2
+        # for i in range(num_obstacles):
+        #     mpc.constraints.lh[i] = (self.obstacle_radii[i] + self.safe_distance)**2
 
 
         # Set solver options
@@ -285,11 +285,11 @@ class MPCController:
         self.mpc_solver.set(0, "ubx", x0)
 
         # Set the obstacle positions
-        param_values = np.concatenate((np.zeros(6), obstacle_positions.flatten()))
+        # param_values = obstacle_positions.flatten()
 
-        # Set the obstacle positions in the solver
-        for i in range(self.N+1):
-            self.mpc_solver.set(i, 'p', param_values)
+        # # Set the obstacle positions in the solver
+        # for i in range(self.N+1):
+        #     self.mpc_solver.set(i, 'p', param_values)
 
         # Set reference trajectory
         for i in range(self.mpc.dims.N):

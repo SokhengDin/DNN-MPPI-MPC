@@ -9,6 +9,7 @@ from matplotlib.patches import Circle
 import casadi as ca
 import pybullet as p
 import pybullet_data
+import math
 
 from scipy.linalg import block_diag
 from acados_template import AcadosModel, AcadosOcp, AcadosOcpSolver, AcadosSim, AcadosSimSolver
@@ -380,6 +381,17 @@ def key_listener():
             return True
     return False
 
+def inverse_kinematic(v, delta, L, W):
+    omega = v * math.tan(delta) / L
+
+    v_lrw = v * (1 - W * math.tan(delta) / (2 * L))
+    v_rrw = v * (1 + W * math.tan(delta) / (2 * L))
+
+    v_lfw = math.sqrt(v**2 + ((v * math.tan(delta) / 2) - (v * W * math.tan(delta) / (2 * L)))**2)
+    v_rfw = math.sqrt(v**2 + ((v * math.tan(delta) / 2) + (v * W * math.tan(delta) / (2 * L)))**2)
+
+    return v_lrw, v_rrw, v_lfw, v_rfw
+
 if __name__ == "__main__":
     # Initialize PyBullet
     p.connect(p.GUI)
@@ -391,6 +403,7 @@ if __name__ == "__main__":
     start_pos = [0, 0, 0.1]
     start_orientation = p.getQuaternionFromEuler([0, 0, 0])
     car_id = p.loadURDF("/home/eroxii/ocp_ws/RL-MPPI-MPC/urdf/racecar/racecar.urdf", start_pos, start_orientation)
+
 
     # Get the joint information
     num_joints = p.getNumJoints(car_id)
@@ -406,28 +419,29 @@ if __name__ == "__main__":
         elif joint_name == 'left_rear_wheel_joint' or joint_name == 'right_rear_wheel_joint' or \
             joint_name == 'left_front_wheel_joint' or joint_name == 'right_front_wheel_joint':
             drive_joints.append(i)
+    
 
     # Set up the MPC controller
     state_init = np.array([0.0, 0.0, 0.0, 0.0])
     control_init = np.array([0.0, 0.0])
 
     ## Cost Matrices
-    state_cost_matrix = np.diag([250.0, 250.0, 950.0, 450.0]) 
-    control_cost_matrix = np.diag([0.1, 0.01])                
-    terminal_cost_matrix = np.diag([250.0, 250.0, 950.0, 450.0]) 
+    state_cost_matrix = np.diag([2, 2, 4, 4]) 
+    control_cost_matrix = np.diag([1, 1])                
+    terminal_cost_matrix = np.diag([2, 2, 4, 4]) 
 
     ## Constraints
-    state_lower_bound = np.array([-50.0, -50.0, -np.pi, -100.0])
-    state_upper_bound = np.array([50.0, 50.0, np.pi, 100.0])
-    control_lower_bound = np.array([-50.0, -np.pi])  
-    control_upper_bound = np.array([50.0, np.pi])
+    state_lower_bound = np.array([-50.0, -50.0, -np.pi/2, -100.0])
+    state_upper_bound = np.array([50.0, 50.0, np.pi/2, 100.0])
+    control_lower_bound = np.array([-50.0, -np.pi/2])  
+    control_upper_bound = np.array([50.0, np.pi/2])
 
-    obstacle_positions = np.array([[-2.0, -2.0], [-4.0, 4.0]])  
-    obstacle_radii = np.array([0.5, 0.5])
+    obstacle_positions = np.array([[-2.0, -2.0]])  
+    obstacle_radii = np.array([0.5])
     safe_distance = 0.2
-    N = 10
+    N = 50
     dt = 0.01
-    Ts = 1.5
+    Ts = 3.0
 
     mpc_controller = MPCController(
         x0=state_init,
@@ -495,6 +509,11 @@ if __name__ == "__main__":
         # Apply the wheel velocities to the rear wheels
         for j in drive_joints:
             p.setJointMotorControl2(car_id, j, p.VELOCITY_CONTROL, targetVelocity=velocity, force=10)
+
+        # p.setJointMotorControl2(car_id, drive_joints[0], p.VELOCITY_CONTROL, targetVelocity=v_lrw, force=10)  # Left rear wheel
+        # p.setJointMotorControl2(car_id, drive_joints[1], p.VELOCITY_CONTROL, targetVelocity=v_rrw, force=10)  # Right rear wheel
+        # p.setJointMotorControl2(car_id, drive_joints[2], p.VELOCITY_CONTROL, targetVelocity=v_lfw, force=10)  # Left front wheel
+        # p.setJointMotorControl2(car_id, drive_joints[3], p.VELOCITY_CONTROL, targetVelocity=v_rfw, force=10)
 
         # Apply the steering angles to the front wheels
         for j in steering_joints:
