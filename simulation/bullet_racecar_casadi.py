@@ -18,7 +18,7 @@ if __name__ == "__main__":
     plane_id = p.loadURDF("plane.urdf")
     start_pos = [0, 0, 0.1]
     start_orientation = p.getQuaternionFromEuler([0, 0, 0])
-    car_id = p.loadURDF("/home/eroxii/ocp_ws/RL-MPPI-MPC/urdf/racecar/racecar.urdf", start_pos, start_orientation)
+    car_id = p.loadURDF("/home/eroxii/ocp_ws/bullet3/examples/pybullet/gym/pybullet_data/racecar/racecar.urdf", start_pos, start_orientation)
 
     # Get the joint information
     num_joints = p.getNumJoints(car_id)

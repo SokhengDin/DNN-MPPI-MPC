@@ -53,6 +53,58 @@ def inverse_kinematics(v, omega):
     return v_front_left, v_front_right, v_rear_left, v_rear_right
 
 
+def collect_data(num_samples, mpc, dt, robot_id, yref, yref_N, obstacle_positions):
+    states = []
+    controls = []
+    errors = []
+
+    # Initialize simX and simU
+    simX = np.zeros((mpc.mpc.dims.N+1, mpc.mpc.dims.nx))
+    simU = np.zeros((mpc.mpc.dims.N, mpc.mpc.dims.nu))
+
+    for _ in range(num_samples):
+        # Get the current state
+        pos, ori = p.getBasePositionAndOrientation(robot_id)
+        vel, ang_vel = p.getBaseVelocity(robot_id)
+        euler = p.getEulerFromQuaternion(ori)
+        yaw = euler[2]
+        state_current = np.array([pos[0], pos[1], yaw])
+
+        # Solve the MPC problem
+        simX, simU = mpc.solve_mpc(state_current, simX, simU, yref, yref_N, obstacle_positions)
+
+        # Get the optimal control input
+        u = simU[0, :]
+        v = u[0]  # Linear velocity
+        omega = u[1]  # Angular velocity
+
+        # Calculate wheel velocities using inverse kinematics
+        v_front_left, v_front_right, v_rear_left, v_rear_right = inverse_kinematics(v, omega)
+
+        # Apply the control input to the Husky robot
+        p.setJointMotorControl2(robot_id, 2, p.VELOCITY_CONTROL, targetVelocity=v_front_left, maxVelocity=1.0)
+        p.setJointMotorControl2(robot_id, 3, p.VELOCITY_CONTROL, targetVelocity=v_front_right, maxVelocity=1.0)
+        p.setJointMotorControl2(robot_id, 4, p.VELOCITY_CONTROL, targetVelocity=v_rear_left, maxVelocity=1.0)
+        p.setJointMotorControl2(robot_id, 5, p.VELOCITY_CONTROL, targetVelocity=v_rear_right, maxVelocity=1.0)
+
+        # Step the simulation
+        p.stepSimulation()
+
+        # Collect data
+        states.append(state_current)
+        controls.append(u)
+
+        # Re-simulate using the nominal controller
+        nominal_pos, _ = p.getBasePositionAndOrientation(robot_id)
+        nominal_state = np.array([nominal_pos[0], nominal_pos[1], yaw])
+        error = state_current - nominal_state
+        errors.append(error)
+
+        # Sleep to maintain a consistent simulation rate
+        time.sleep(dt)
+
+    return np.array(states), np.array(controls), np.array(errors)
+
 # Connect to PyBullet with GPU acceleration
 physicsClient = p.connect(p.GUI)
 p.setAdditionalSearchPath(pybullet_data.getDataPath())
@@ -130,13 +182,14 @@ num_joints = p.getNumJoints(robot_id)
 wheel_joints = []
 joints_list = ['front_left_wheel', 'front_right_wheel', 'rear_left_wheel', 'rear_right_wheel']
 
+output_dir = "saved_data"
+
+os.makedirs(output_dir, exist_ok=True)
+
 for i in range(num_joints):
     joint_info = p.getJointInfo(robot_id, i)
     joint_name = joint_info[1].decode('utf-8')
 
-    # if joint_name == 'front_left_wheel' or joint_name == 'front_right_wheel' or \
-    #     joint_name == 'rear_left_wheel' or joint_name == 'rear_right_wheel':
-    #     wheel_joints.append(i)
     if joint_name in joints_list:
         wheel_joints.append(i)
         print(joint_name)
@@ -147,67 +200,19 @@ print("Wheel joints:", wheel_joints)
 state_current = state_init
 control_current = control_init
 
-# Get the optimal state and control trajectories
-simX = np.zeros((mpc.mpc.dims.N+1, mpc.mpc.dims.nx))
-simU = np.zeros((mpc.mpc.dims.N, mpc.mpc.dims.nu))
+# Get the reference state and control
+state_ref = np.array([5, 10, 1.57])
+control_ref = np.array([4.0, 1.57])
+yref = np.concatenate([state_ref, control_ref])
+yref_N = state_ref  # Terminal state reference
 
-while True:
-    try:
-        # Get the reference state
-        state_ref = np.array([5, 10, 1.57])
-        control_ref = np.array([4.0, 1.57])
-        yref = np.concatenate([state_ref, control_ref])
-        yref_N = state_ref  # Terminal state reference
+# Collect data for system identification
+num_samples = 1000
+states, controls, errors = collect_data(num_samples, mpc, timestep, robot_id, yref, yref_N, obstacle_positions)
 
-        # Get the current state
-        pos, ori = p.getBasePositionAndOrientation(robot_id)
-        vel, ang_vel = p.getBaseVelocity(robot_id)
-        euler = p.getEulerFromQuaternion(ori)
-        yaw = euler[2]
-        state_current = np.array([pos[0], pos[1], yaw])
-
-        # Solve the MPC problem
-        simX, simU = mpc.solve_mpc(state_current, simX, simU, yref, yref_N, obstacle_positions)
-
-        # Get the optimal control input
-        u = simU[0, :]
-        v = u[0]  # Linear velocity
-        omega = u[1]  # Angular velocity
-
-        print("Control input:", u, "State:", state_current)
-
-
-        # Calculate wheel velocities using inverse kinematics
-        v_front_left, v_front_right, v_rear_left, v_rear_right = inverse_kinematics(v, omega)
-
-        # Apply the control input to the Husky robot
-        p.setJointMotorControl2(robot_id, 2, p.VELOCITY_CONTROL, targetVelocity=v_front_left, maxVelocity=1.0)
-        p.setJointMotorControl2(robot_id, 3, p.VELOCITY_CONTROL, targetVelocity=v_front_right, maxVelocity=1.0)
-        p.setJointMotorControl2(robot_id, 4, p.VELOCITY_CONTROL, targetVelocity=v_rear_left, maxVelocity=1.0)
-        p.setJointMotorControl2(robot_id, 5, p.VELOCITY_CONTROL, targetVelocity=v_rear_right, maxVelocity=1.0)
-
-
-        # Step the simulation
-        p.stepSimulation()
-
-        # Update the cube's position for plotting
-        cube_pos, _ = p.getBasePositionAndOrientation(cube_id1)
-
-        # Clear the plot and draw the cube at the new position
-        # ax.clear()
-        # plot_cube(ax, cube_pos, cube_size)
-        # ax.set_xlim([-10, 10])
-        # ax.set_ylim([-10, 10])
-        # ax.set_zlim([0, 5])
-        # plt.draw()
-        # plt.pause(0.001)
-
-        # Sleep to maintain a consistent simulation rate
-        time.sleep(dt)
-
-    except Exception as e:
-        print(f"Error in simulation loop: {e}")
-        break
-
+# Save the collected data to files
+np.save(os.path.join(output_dir, "states_diff.npy"), states)
+np.save(os.path.join(output_dir, "controls_diff.npy"), controls)
+np.save(os.path.join(output_dir, "errors_diff.npy"), errors)
 # Disconnect from PyBullet
 p.disconnect()
