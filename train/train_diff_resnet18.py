@@ -7,32 +7,50 @@ import numpy as np
 import torch.optim as optim
 from torch.utils.data import TensorDataset, DataLoader
 from dnn.resnet18 import ResNet18
+import matplotlib.pyplot as plt
+
+
+def plot_training_loss(losses, save_path):
+    plt.figure(figsize=(10, 5))
+    plt.plot(losses, label="Training loss")
+    plt.xlabel("Iterations")
+    plt.ylabel("Loss")
+    plt.title("Training Loss over Iteration")
+    plt.legend()
+    plt.grid(True)
+    plt.savefig(save_path)
+    plt.show()
 
 def train_resnet18(states, controls, errors, num_epochs, batch_size, learning_rate):
-    # Convert data to PyTorch tensors
-    states_tensor = torch.from_numpy(states).float()
-    controls_tensor = torch.from_numpy(controls).float()
-    errors_tensor = torch.from_numpy(errors).float()
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # Create a dataset and data loader
+    states_tensor = torch.from_numpy(states).float().to(device)
+    controls_tensor = torch.from_numpy(controls).float().to(device)
+    errors_tensor = torch.from_numpy(errors).float().to(device)
+
+
     dataset = TensorDataset(states_tensor, controls_tensor, errors_tensor)
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
 
-    # Create the ResNet18 model
+
     input_dim = states.shape[1] + controls.shape[1]
     output_dim = errors.shape[1]
-    model = ResNet18(input_dim, output_dim)  # Assuming the error has 3 components (x, y, yaw)
+    model = ResNet18(input_dim, output_dim).to(device)
 
-    # Define the loss function and optimizer
+
     criterion = nn.MSELoss()
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
 
     # Training loop
+    losses = []
     for epoch in range(num_epochs):
         running_loss = 0.0
         for i, data in enumerate(dataloader, 0):
             inputs_states, inputs_controls, labels = data
-            inputs = torch.cat((inputs_states, inputs_controls), dim=1)  # Concatenate states and controls
+            inputs = torch.cat((inputs_states, inputs_controls), dim=1)  
+            inputs = inputs.unsqueeze(2)  
+
+            inputs, labels = inputs.to(device), labels.to(device)
 
             optimizer.zero_grad()
 
@@ -42,21 +60,35 @@ def train_resnet18(states, controls, errors, num_epochs, batch_size, learning_ra
             optimizer.step()
 
             running_loss += loss.item()
+            losses.append(loss.item())
 
         print(f"Epoch [{epoch+1}/{num_epochs}], Loss: {running_loss / (i+1):.4f}")
 
     print("Training finished.")
+
+    # PLot training loss
+    plot_path = "training_loss.png"
+    plot_training_loss(losses, plot_path)
+
+    # Save the model
+    save_dir = "saved_models"
+    os.makedirs(save_dir, exist_ok=True)
+    model_save_path = os.path.join(save_dir, "resnet18_diff.pth")
+    torch.save(model.state_dict(), model_save_path)
+
+    print(f"Model saved at {model_save_path}")
     return model
 
-# Source dir
+# input dir
 input_dir = "saved_data"
 
-# Load the saved data
-states = np.load(os.path.join(input_dir, "states.npy"))
-controls = np.load(os.path.join(input_dir, "controls.npy"))
-errors = np.load(os.path.join(input_dir, "errors.npy"))
+# Load the data
+states = np.load(os.path.join(input_dir, "states_diff.npy"))
+controls = np.load(os.path.join(input_dir, "controls_diff.npy"))
+errors = np.load(os.path.join(input_dir, "errors_diff.npy"))
+
 # Train the ResNet18 model
-num_epochs = 50
+num_epochs = 100
 batch_size = 64
 learning_rate = 0.001
 trained_model = train_resnet18(states, controls, errors, num_epochs, batch_size, learning_rate)

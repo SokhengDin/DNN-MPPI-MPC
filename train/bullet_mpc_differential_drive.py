@@ -81,6 +81,10 @@ def collect_data(num_samples, mpc, dt, robot_id, yref, yref_N, obstacle_position
         # Calculate wheel velocities using inverse kinematics
         v_front_left, v_front_right, v_rear_left, v_rear_right = inverse_kinematics(v, omega)
 
+        # Debug information
+        # print("State:", state_current)
+        # print("Control:", u)
+
         # Apply the control input to the Husky robot
         p.setJointMotorControl2(robot_id, 2, p.VELOCITY_CONTROL, targetVelocity=v_front_left, maxVelocity=1.0)
         p.setJointMotorControl2(robot_id, 3, p.VELOCITY_CONTROL, targetVelocity=v_front_right, maxVelocity=1.0)
@@ -104,6 +108,74 @@ def collect_data(num_samples, mpc, dt, robot_id, yref, yref_N, obstacle_position
         time.sleep(dt)
 
     return np.array(states), np.array(controls), np.array(errors)
+
+
+def circle_trajectory(t, radius, center):
+    x = radius * np.cos(t) + center[0]
+    y = radius * np.sin(t) + center[1]
+    yaw = t
+    return np.array([x, y, yaw])
+
+def lemniscate_trajectory(t, scale, center):
+    x = scale * np.cos(t) / (1 + np.sin(t)**2) + center[0]
+    y = scale * np.cos(t) * np.sin(t) / (1 + np.sin(t)**2) + center[1]
+    yaw = np.arctan2(y - center[1], x - center[0])
+    return np.array([x, y, yaw])
+
+def collect_data_series(num_series, num_samples_per_series, mpc, dt, robot_id, obstacle_positions, distance_threshold=0.1):
+    all_states = []
+    all_controls = []
+    all_errors = []
+
+    for i in range(num_series):
+        trajectory_type = i % 3  # Alternate between different trajectory types
+
+        if trajectory_type == 0:
+            # Random reference state and control
+            state_ref = np.random.uniform(low=[-10, -10, -np.pi], high=[10, 10, np.pi])
+            control_ref = np.random.uniform(low=[-5, -np.pi/2], high=[5, np.pi/2])
+            print("Random reference state and control:")
+            print("State ref:", state_ref)
+            print("Control ref:", control_ref)
+        elif trajectory_type == 1:
+            # Circle trajectory
+            radius = np.random.uniform(low=5, high=10)
+            center = np.random.uniform(low=[-5, -5], high=[5, 5])
+            state_ref = circle_trajectory(0, radius, center)
+            control_ref = np.array([4.0, 1.57])
+            print("Circle trajectory:")
+            print("State ref:", state_ref)
+            print("Control ref:", control_ref)
+
+        else:
+            # Lemniscate trajectory
+            scale = np.random.uniform(low=5, high=10)
+            center = np.random.uniform(low=[-5, -5], high=[5, 5])
+            state_ref = lemniscate_trajectory(0, scale, center)
+            control_ref = np.array([4.0, 1.57])
+            print("Lemniscate trajectory:")
+            print("State ref:", state_ref)
+            print("Control ref:", control_ref)
+
+        yref = np.concatenate([state_ref, control_ref])
+        yref_N = state_ref  # Terminal state reference
+
+        while True:
+            states, controls, errors = collect_data(num_samples_per_series, mpc, dt, robot_id, yref, yref_N, obstacle_positions)
+            current_state = states[-1, :]
+
+            if np.linalg.norm(current_state - state_ref) < distance_threshold:
+                break
+
+        all_states.append(states)
+        all_controls.append(controls)
+        all_errors.append(errors)
+
+    all_states = np.concatenate(all_states, axis=0)
+    all_controls = np.concatenate(all_controls, axis=0)
+    all_errors = np.concatenate(all_errors, axis=0)
+
+    return all_states, all_controls, all_errors
 
 # Connect to PyBullet with GPU acceleration
 physicsClient = p.connect(p.GUI)
@@ -141,9 +213,9 @@ num_iterations = 1000
 state_init = np.array([0.0, 0.0, 0.0])
 control_init = np.array([0.0, 0.0])
 
-state_cost_matrix = np.diag([9.0, 6.0, 45])
+state_cost_matrix = np.diag([15.0, 10.0, 45])
 control_cost_matrix = np.diag([1, 0.1])
-terminal_cost_matrix = np.diag([9.0, 6.0, 45])
+terminal_cost_matrix = np.diag([15.0, 10.0, 45])
 
 state_lower_bound = np.array([-100.0, -100.0, -3.14])
 state_upper_bound = np.array([100.0, 100.0, 3.14])
@@ -156,7 +228,7 @@ safe_distance = cube_size + 0.1
 
 N = 100
 dt = 0.01
-Ts = 0.5    
+Ts = 2.0
 
 mpc = MPCController(
     x0=state_init,
@@ -168,8 +240,8 @@ mpc = MPCController(
     state_upper_bound=state_upper_bound,
     control_lower_bound=control_lower_bound,
     control_upper_bound=control_upper_bound,
-    obstacle_positions=obstacle_positions,
-    obstacle_radii=obstacle_radii,
+    obstacle_positions=[],
+    obstacle_radii=[],
     safe_distance=safe_distance,
     N=N,
     dt=timestep,
@@ -207,8 +279,9 @@ yref = np.concatenate([state_ref, control_ref])
 yref_N = state_ref  # Terminal state reference
 
 # Collect data for system identification
-num_samples = 1000
-states, controls, errors = collect_data(num_samples, mpc, timestep, robot_id, yref, yref_N, obstacle_positions)
+num_series = 200
+num_samples_per_series = 100
+states, controls, errors = collect_data_series(num_series, num_samples_per_series, mpc, timestep, robot_id, obstacle_positions, 0.3)
 
 # Save the collected data to files
 np.save(os.path.join(output_dir, "states_diff.npy"), states)
