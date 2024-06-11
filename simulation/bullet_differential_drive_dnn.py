@@ -8,32 +8,56 @@ from scipy.linalg import block_diag
 from torchvision import models
 from acados_template import AcadosModel, AcadosOcpSolver, AcadosOcp
 
-class ResNet18(nn.Module):
-    def __init__(self, input_dim, output_dim):
-        super().__init__()
-        self.resnet = models.resnet18(pretrained=True)
-        num_ftrs = self.resnet.fc.in_features
-        self.resnet.fc = nn.Linear(num_ftrs, 512)
-        self.hidden_layers = nn.ModuleList()
-        for i in range(2):
-            self.hidden_layers.append(nn.Linear(512, 512))
-        self.out_layer = nn.Linear(512, output_dim)
+# class ResNet18(nn.Module):
+#     def __init__(self, input_dim, output_dim):
+#         super().__init__()
+#         self.resnet = models.resnet18(pretrained=True)
+#         num_ftrs = self.resnet.fc.in_features
+#         self.resnet.fc = nn.Linear(num_ftrs, 512)
+#         self.hidden_layers = nn.ModuleList()
+#         for i in range(2):
+#             self.hidden_layers.append(nn.Linear(512, 512))
+#         self.out_layer = nn.Linear(512, output_dim)
         
+#         # Model is not trained -- setting output to zero
+#         with torch.no_grad():
+#             self.out_layer.bias.fill_(0.)
+#             self.out_layer.weight.fill_(0.)
+        
+#     def forward(self, x):
+#         x = x.unsqueeze(1)  # Add a channel dimension
+#         x = x.repeat(1, 3, 1, 1)  # Repeat the input along the channel dimension
+#         x = self.resnet(x)
+#         x = x.view(x.size(0), -1)  # Flatten the output of ResNet18
+#         for layer in self.hidden_layers:
+#             x = torch.tanh(layer(x))
+#         x = self.out_layer(x)
+#         return x
+    
+class MultiLayerPerceptron(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+
+        self.input_layer = torch.nn.Linear(5, 512)
+
+        hidden_layers = []
+        for i in range(2):
+            hidden_layers.append(torch.nn.Linear(512, 512))
+
+        self.hidden_layer = torch.nn.ModuleList(hidden_layers)
+        self.out_layer = torch.nn.Linear(512, 3)
+
         # Model is not trained -- setting output to zero
         with torch.no_grad():
             self.out_layer.bias.fill_(0.)
             self.out_layer.weight.fill_(0.)
-        
+
     def forward(self, x):
-        x = x.unsqueeze(1)  # Add a channel dimension
-        x = x.repeat(1, 3, 1, 1)  # Repeat the input along the channel dimension
-        x = self.resnet(x)
-        x = x.view(x.size(0), -1)  # Flatten the output of ResNet18
-        for layer in self.hidden_layers:
+        x = self.input_layer(x)
+        for layer in self.hidden_layer:
             x = torch.tanh(layer(x))
         x = self.out_layer(x)
         return x
-    
 
 
 class DifferentialDriveLearnedDynamics:
@@ -171,13 +195,13 @@ class MPC:
 
 
 def run():
-    N = 100
+    N = 10
 
     input_dim = 5  
     output_dim = 3  
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = ResNet18(input_dim, output_dim).to(device)
-    model.load_state_dict(torch.load("saved_models/resnet18_diff.pth", map_location=device))
+    model = MultiLayerPerceptron().to(device)
+    model.load_state_dict(torch.load("saved_models/mlp_diff.pth", map_location=device))
     model.eval() 
 
     learned_dyn_model = l4c.L4CasADi(
@@ -196,6 +220,8 @@ def run():
     x = []
     ts = 1.0 / N
 
+    tsim = 100
+
     # Initial state
     x_init = np.array([0.0, 0.0, 0.0])
     xt = x_init
@@ -204,7 +230,7 @@ def run():
     state_ref = np.array([5.0, 5.0, np.pi/2])  
     control_ref = np.array([0.0, 0.0]) 
 
-    for i in range(50):
+    for i in range(tsim):
         solver.set(0, "lbx", xt)
         solver.set(0, "ubx", xt)
 
@@ -216,6 +242,8 @@ def run():
 
         xt = solver.get(1, "x")
         ut = solver.get(0, "u")
+
+        print(f"Predicted output: {output_tensor}")
 
         x.append(xt)
 

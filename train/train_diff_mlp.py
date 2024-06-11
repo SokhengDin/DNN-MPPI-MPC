@@ -9,19 +9,44 @@ from torch.utils.data import TensorDataset, DataLoader, random_split
 from sklearn.model_selection import train_test_split
 import matplotlib.pyplot as plt
 
+# class MultiLayerPerceptron(torch.nn.Module):
+#     def __init__(self, input_dim):
+#         super().__init__()
+#         self.input_layer = torch.nn.Linear(input_dim, 512)
+#         hidden_layers = []
+#         for i in range(2):
+#             hidden_layers.append(torch.nn.Linear(512, 512))
+#         self.hidden_layer = torch.nn.ModuleList(hidden_layers)
+#         self.out_layer = torch.nn.Linear(512, 1)
+#         # Model is not trained -- setting output to zero
+#         with torch.no_grad():
+#             self.out_layer.bias.fill_(0.)
+#             self.out_layer.weight.fill_(0.)
+#     def forward(self, x):
+#         x = self.input_layer(x)
+#         for layer in self.hidden_layer:
+#             x = torch.tanh(layer(x))
+#         x = self.out_layer(x)
+#         return x
+    
 class MultiLayerPerceptron(torch.nn.Module):
     def __init__(self, input_dim):
         super().__init__()
+
         self.input_layer = torch.nn.Linear(input_dim, 512)
+
         hidden_layers = []
         for i in range(2):
             hidden_layers.append(torch.nn.Linear(512, 512))
+
         self.hidden_layer = torch.nn.ModuleList(hidden_layers)
-        self.out_layer = torch.nn.Linear(512, 1)
+        self.out_layer = torch.nn.Linear(512, 3)
+
         # Model is not trained -- setting output to zero
         with torch.no_grad():
             self.out_layer.bias.fill_(0.)
             self.out_layer.weight.fill_(0.)
+
     def forward(self, x):
         x = self.input_layer(x)
         for layer in self.hidden_layer:
@@ -134,7 +159,7 @@ controls = np.load(os.path.join(input_dir, "controls_diff.npy"))
 errors = np.load(os.path.join(input_dir, "errors_diff.npy"))
 
 # Train the MLP model
-num_epochs = 50
+num_epochs = 500
 batch_size = 64
 learning_rate = 0.0001
 trained_model = train_mlp(states, controls, errors, num_epochs, batch_size, learning_rate)
