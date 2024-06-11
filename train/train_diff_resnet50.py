@@ -5,17 +5,16 @@ import torch
 import torch.nn as nn
 import numpy as np
 import torch.optim as optim
-
+from torch.utils.data import TensorDataset, DataLoader, random_split
 from torchvision import models
-from torch.utils.data import TensorDataset, DataLoader
 from sklearn.model_selection import train_test_split
-# from dnn.resnet18 import ResNet18
+# from dnn.resnet50 import ResNet50
 import matplotlib.pyplot as plt
 
-class ResNet18(nn.Module):
+class ResNet50(nn.Module):
     def __init__(self, input_dim, output_dim):
         super().__init__()
-        self.resnet = models.resnet18(pretrained=True)
+        self.resnet = models.resnet50(pretrained=True)
         num_ftrs = self.resnet.fc.in_features
         self.resnet.fc = nn.Linear(num_ftrs, 512)
         self.hidden_layers = nn.ModuleList()
@@ -29,10 +28,10 @@ class ResNet18(nn.Module):
             self.out_layer.weight.fill_(0.)
         
     def forward(self, x):
-        x = x.unsqueeze(1)  
-        x = x.repeat(1, 3, 1, 1) 
+        x = x.unsqueeze(1)
+        x = x.repeat(1, 3, 1, 1)
         x = self.resnet(x)
-        x = x.view(x.size(0), -1)  
+        x = x.view(x.size(0), -1)
         for layer in self.hidden_layers:
             x = torch.tanh(layer(x))
         x = self.out_layer(x)
@@ -51,7 +50,7 @@ def plot_training_loss(train_losses, val_losses, save_path):
     plt.show()
 
 
-def train_resnet18(states, controls, errors, num_epochs, batch_size, learning_rate):
+def train_resnet50(states, controls, errors, num_epochs, batch_size, learning_rate):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # Split the dataset into training and validation sets
@@ -75,7 +74,7 @@ def train_resnet18(states, controls, errors, num_epochs, batch_size, learning_ra
 
     input_dim = states.shape[1] + controls.shape[1]
     output_dim = errors.shape[1]
-    model = ResNet18(input_dim, output_dim).to(device)
+    model = ResNet50(input_dim, output_dim).to(device)
 
     criterion = nn.MSELoss()
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
@@ -126,13 +125,13 @@ def train_resnet18(states, controls, errors, num_epochs, batch_size, learning_ra
     print("Training finished.")
 
     # PLot training loss
-    plot_path = "training_loss_resnet18.png"
+    plot_path = "training_loss_resnet50.png"
     plot_training_loss(train_losses, val_losses, plot_path)
 
     # Save the model
     save_dir = "saved_models"
     os.makedirs(save_dir, exist_ok=True)
-    model_save_path = os.path.join(save_dir, "resnet18_diff.pth")
+    model_save_path = os.path.join(save_dir, "resnet50_diff.pth")
     torch.save(model.state_dict(), model_save_path)
 
     print(f"Model saved at {model_save_path}")
@@ -147,7 +146,7 @@ controls = np.load(os.path.join(input_dir, "controls_diff.npy"))
 errors = np.load(os.path.join(input_dir, "errors_diff.npy"))
 
 # Train the ResNet18 model
-num_epochs = 150
+num_epochs = 50
 batch_size = 64
 learning_rate = 0.0001
-trained_model = train_resnet18(states, controls, errors, num_epochs, batch_size, learning_rate)
+trained_model = train_resnet50(states, controls, errors, num_epochs, batch_size, learning_rate)

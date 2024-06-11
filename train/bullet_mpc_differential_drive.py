@@ -214,7 +214,7 @@ def collect_data_series(num_series, num_samples_per_series, mpc, dt, robot_id, c
             # Pause to update the plot
             plt.pause(0.01)
 
-            if np.linalg.norm(state_current - state_ref) < distance_threshold:
+            if np.linalg.norm(state_current[:2] - state_ref[:2]) < distance_threshold:
                 break
 
         all_states.append(states)
@@ -280,7 +280,7 @@ obstacle_radii = np.array([cube_size, cube_size, cube_size])
 safe_distance = cube_size + 0.1
 
 N = 100
-dt = 0.01
+dt = 0.02
 Ts = 3.0
 
 mpc = MPCController(
@@ -326,17 +326,12 @@ state_current = state_init
 control_current = control_init
 
 
-# Get the reference state and control
-state_ref = np.array([5, 10, 1.57])
-control_ref = np.array([4.0, 1.57])
-yref = np.concatenate([state_ref, control_ref])
-yref_N = state_ref  # Terminal state reference
 
 # Collect data for system identification
-num_series = 1000
-num_samples_per_series = 200
+num_series = 50
+num_samples_per_series = 100
 cube_ids = [cube_id1, cube_id2, cude_id3, cube_id4, cube_id5, cube_id6]  # Add the cube IDs to a list
-states, controls, errors = collect_data_series(num_series, num_samples_per_series, mpc, timestep, robot_id, cube_ids, 0.3)
+states, controls, errors = collect_data_series(num_series, num_samples_per_series, mpc, timestep, robot_id, cube_ids, 0.2)
 
 # Save the collected data to files
 np.save(os.path.join(output_dir, "states_diff.npy"), states)
