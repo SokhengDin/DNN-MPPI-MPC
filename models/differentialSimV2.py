@@ -4,11 +4,10 @@ import matplotlib.pyplot as plt
 class DiffSimulation:
 
     def __init__(self, r_h=0.2, r_w=0.30, w_h=0.025, w_w=0.075, rot_angle=0.0, w_pos=0.15):
-
         ## robot shape
         self.robot_h = r_h
         self.robot_w = r_w
-        ## wheel shaspe
+        ## wheel shape
         self.wheel_h = w_h
         self.wheel_w = w_w
         ## wheel position
@@ -20,7 +19,6 @@ class DiffSimulation:
         matrix_transform = np.array([[np.cos(theta), -np.sin(theta)],
                 [np.sin(theta), np.cos(theta)]]).T
         return matrix_transform
-
 
     def robot_shape(self):
         matrix_shape = np.array([
@@ -36,7 +34,7 @@ class DiffSimulation:
         ])
         return matrix_wheel
 
-    def generate_each_wheel_and_draw(self, x, y, yaw):
+    def generate_each_wheel_and_draw(self, ax, x, y, yaw):
         # Copy Matrix as robot_shape
         pos_wheel = self.robot_wheel()
         pos_wheel1 = pos_wheel.copy()
@@ -63,9 +61,9 @@ class DiffSimulation:
         robot_shape = self.robot_shape()
         robot_shaped = np.dot(robot_shape.T, self.rotation_angle(yaw)).T
 
-        plt.plot(robot_shaped[0, :]+x, robot_shaped[1, :]+y, color="black")
-        plt.plot(x, y, marker="x", color="red")
-        plt.plot(pos_wheel1[0, :]+x, pos_wheel1[1, :]+y, color="black")
-        plt.plot(pos_wheel2[0, :]+x, pos_wheel2[1, :]+y, color="black")
-        plt.plot(pos_wheel3[0, :]+x, pos_wheel3[1, :]+y, color="black")
-        plt.plot(pos_wheel4[0, :]+x, pos_wheel4[1, :]+y, color="black")
+        ax.plot(robot_shaped[0, :]+x, robot_shaped[1, :]+y, color="black")
+        ax.plot(x, y, marker="x", color="red")
+        ax.plot(pos_wheel1[0, :]+x, pos_wheel1[1, :]+y, color="black")
+        ax.plot(pos_wheel2[0, :]+x, pos_wheel2[1, :]+y, color="black")
+        ax.plot(pos_wheel3[0, :]+x, pos_wheel3[1, :]+y, color="black")
+        ax.plot(pos_wheel4[0, :]+x, pos_wheel4[1, :]+y, color="black")

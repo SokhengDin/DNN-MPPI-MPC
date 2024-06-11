@@ -9,6 +9,8 @@ import matplotlib.pyplot as plt
 from controllers.mpc_differential_drive_obstacle_dynamic import MPCController
 from typing import Tuple
 from mpl_toolkits.mplot3d import Axes3D
+from matplotlib.animation import FuncAnimation
+from models.differentialSimV2 import DiffSimulation
 
 def plot_arrow(x, y, yaw, length=0.5, width=0.1, fc="b", ec="k"):
     p.addUserDebugLine(
@@ -17,12 +19,6 @@ def plot_arrow(x, y, yaw, length=0.5, width=0.1, fc="b", ec="k"):
         lineColorRGB=[1, 0, 0],
         lineWidth=3
     )
-
-# Initialize Matplotlib figure
-fig = plt.figure()
-ax = fig.add_subplot(111, projection='3d')
-plt.ion()
-plt.show()
 
 # Function to plot the cube
 def plot_cube(ax, position, size):
@@ -104,6 +100,8 @@ def collect_data(num_samples, mpc, dt, robot_id, yref, yref_N, obstacle_position
         error = state_current - nominal_state
         errors.append(error)
 
+        yield state_current, u, simX, simU
+
         # Sleep to maintain a consistent simulation rate
         time.sleep(dt)
 
@@ -122,10 +120,14 @@ def lemniscate_trajectory(t, scale, center):
     yaw = np.arctan2(y - center[1], x - center[0])
     return np.array([x, y, yaw])
 
-def collect_data_series(num_series, num_samples_per_series, mpc, dt, robot_id, obstacle_positions, distance_threshold=0.1):
+def collect_data_series(num_series, num_samples_per_series, mpc, dt, robot_id, cube_ids, obstacle_positions, distance_threshold=0.1):
     all_states = []
     all_controls = []
     all_errors = []
+
+    # Set up figure
+    fig, ax = plt.subplots(figsize=(7, 7))
+    differential_robot = DiffSimulation()
 
     for i in range(num_series):
         trajectory_type = i % 3  # Alternate between different trajectory types
@@ -146,7 +148,6 @@ def collect_data_series(num_series, num_samples_per_series, mpc, dt, robot_id, o
             print("Circle trajectory:")
             print("State ref:", state_ref)
             print("Control ref:", control_ref)
-
         else:
             # Lemniscate trajectory
             scale = np.random.uniform(low=5, high=10)
@@ -160,11 +161,60 @@ def collect_data_series(num_series, num_samples_per_series, mpc, dt, robot_id, o
         yref = np.concatenate([state_ref, control_ref])
         yref_N = state_ref  # Terminal state reference
 
-        while True:
-            states, controls, errors = collect_data(num_samples_per_series, mpc, dt, robot_id, yref, yref_N, obstacle_positions)
-            current_state = states[-1, :]
+        data_generator = collect_data(num_samples_per_series, mpc, dt, robot_id, yref, yref_N, obstacle_positions)
 
-            if np.linalg.norm(current_state - state_ref) < distance_threshold:
+        states = []
+        controls = []
+        errors = []
+
+        for state_current, u, simX, simU in data_generator:
+            states.append(state_current)
+            controls.append(u)
+            errors.append(state_current - state_ref)
+
+            # Clear the previous plot
+            ax.clear()
+
+            # Plot the robot frame
+            differential_robot.generate_each_wheel_and_draw(ax, state_current[0], state_current[1], state_current[2])
+
+            # Plot the goal point
+            ax.plot(state_ref[0], state_ref[1], 'ro', markersize=10)
+
+            for cube_id in cube_ids:
+                cube_pos, _ = p.getBasePositionAndOrientation(cube_id)
+                obstacle = plt.Circle(cube_pos[:2], cube_size, color='b', alpha=0.7)
+                ax.add_patch(obstacle)
+
+            # Plot the robot's trajectory
+            xs_array = np.array(states)
+            ax.plot(xs_array[:, 0], xs_array[:, 1], 'r-', linewidth=1.5)
+
+            # Plot predicting states
+            ax.plot(simX[:, 0], simX[:, 1], 'g--', linewidth=1.5)
+
+            # Add a popup window on the robot
+            popup_text = f"Position: ({state_current[0]:.2f}, {state_current[1]:.2f})\nYaw: {state_current[2]:.2f}"
+            popup = ax.text(8, 10, popup_text, fontsize=10, ha='center', va='bottom',
+                            bbox=dict(facecolor='white', edgecolor='black', boxstyle='round'))
+            
+            # Popup window for the reference state
+            popup_text_ref = f"Position Ref: ({state_ref[0]:.2f}, {state_ref[1]:.2f})\nYaw: {state_ref[2]:.2f}"
+            popup_ref = ax.text(-7, 10, popup_text_ref, fontsize=10, ha='center', va='bottom',
+                            bbox=dict(facecolor='white', edgecolor='black', boxstyle='round'))
+            
+
+            # Set plot limits and labels
+            ax.set_xlim(-12, 12)
+            ax.set_ylim(-12, 12)
+            ax.set_xlabel('X')
+            ax.set_ylabel('Y')
+            ax.set_title('Differential Drive Robot Frame Animation')
+
+            # Pause to update the plot
+            plt.pause(0.01)
+
+            if np.linalg.norm(state_current - state_ref) < distance_threshold:
                 break
 
         all_states.append(states)
@@ -193,6 +243,9 @@ cube_collision_shape_id = p.createCollisionShape(shapeType=p.GEOM_BOX, halfExten
 cube_id1 = p.createMultiBody(baseMass=cube_mass, baseCollisionShapeIndex=cube_collision_shape_id, baseVisualShapeIndex=cube_visual_shape_id, basePosition=[3, 3, cube_size])
 cube_id2 = p.createMultiBody(baseMass=cube_mass, baseCollisionShapeIndex=cube_collision_shape_id, baseVisualShapeIndex=cube_visual_shape_id, basePosition=[6.5, 2.8, cube_size])
 cude_id3 = p.createMultiBody(baseMass=cube_mass, baseCollisionShapeIndex=cube_collision_shape_id, baseVisualShapeIndex=cube_visual_shape_id, basePosition=[5.5, 5.5, cube_size])
+cube_id4 = p.createMultiBody(baseMass=cube_mass, baseCollisionShapeIndex=cube_collision_shape_id, baseVisualShapeIndex=cube_visual_shape_id, basePosition=[-5.5, 5.5, cube_size])
+cube_id5 = p.createMultiBody(baseMass=cube_mass, baseCollisionShapeIndex=cube_collision_shape_id, baseVisualShapeIndex=cube_visual_shape_id, basePosition=[-5.5, -5.5, cube_size])
+cube_id6 = p.createMultiBody(baseMass=cube_mass, baseCollisionShapeIndex=cube_collision_shape_id, baseVisualShapeIndex=cube_visual_shape_id, basePosition=[5.5, -5.5, cube_size])
 
 
 # Enable GPU acceleration and set real-time simulation
@@ -213,14 +266,14 @@ num_iterations = 1000
 state_init = np.array([0.0, 0.0, 0.0])
 control_init = np.array([0.0, 0.0])
 
-state_cost_matrix = np.diag([15.0, 10.0, 45])
-control_cost_matrix = np.diag([1, 0.1])
-terminal_cost_matrix = np.diag([15.0, 10.0, 45])
+state_cost_matrix = np.diag([25.0, 20.0, 45])
+control_cost_matrix = np.diag([1, 1])
+terminal_cost_matrix = np.diag([25.0, 20.0, 45])
 
-state_lower_bound = np.array([-100.0, -100.0, -3.14])
-state_upper_bound = np.array([100.0, 100.0, 3.14])
-control_lower_bound = np.array([-10, -3.14])
-control_upper_bound = np.array([10, 3.14])
+state_lower_bound = np.array([-15.0, -15.0, -3.14])
+state_upper_bound = np.array([15.0, 15.0, 3.14])
+control_lower_bound = np.array([-10, -31.4])
+control_upper_bound = np.array([10, 31.4])
 
 obstacle_positions = np.array([[3.0, 3.0], [6.5, 2.8], [6.0, 5.5]]) 
 obstacle_radii = np.array([cube_size, cube_size, cube_size])
@@ -228,7 +281,7 @@ safe_distance = cube_size + 0.1
 
 N = 100
 dt = 0.01
-Ts = 2.0
+Ts = 3.0
 
 mpc = MPCController(
     x0=state_init,
@@ -272,6 +325,7 @@ print("Wheel joints:", wheel_joints)
 state_current = state_init
 control_current = control_init
 
+
 # Get the reference state and control
 state_ref = np.array([5, 10, 1.57])
 control_ref = np.array([4.0, 1.57])
@@ -279,9 +333,10 @@ yref = np.concatenate([state_ref, control_ref])
 yref_N = state_ref  # Terminal state reference
 
 # Collect data for system identification
-num_series = 200
-num_samples_per_series = 100
-states, controls, errors = collect_data_series(num_series, num_samples_per_series, mpc, timestep, robot_id, obstacle_positions, 0.3)
+num_series = 1000
+num_samples_per_series = 200
+cube_ids = [cube_id1, cube_id2, cude_id3, cube_id4, cube_id5, cube_id6]  # Add the cube IDs to a list
+states, controls, errors = collect_data_series(num_series, num_samples_per_series, mpc, timestep, robot_id, cube_ids, 0.3)
 
 # Save the collected data to files
 np.save(os.path.join(output_dir, "states_diff.npy"), states)
