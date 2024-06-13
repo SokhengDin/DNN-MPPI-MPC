@@ -18,11 +18,7 @@ def plot_arrow(x, y, yaw, length=0.5, width=0.1, fc="b", ec="k"):
         lineWidth=3
     )
 
-# Initialize Matplotlib figure
-fig = plt.figure()
-ax = fig.add_subplot(111, projection='3d')
-plt.ion()
-plt.show()
+
 
 # Function to plot the cube
 def plot_cube(ax, position, size):
@@ -134,9 +130,6 @@ for i in range(num_joints):
     joint_info = p.getJointInfo(robot_id, i)
     joint_name = joint_info[1].decode('utf-8')
 
-    # if joint_name == 'front_left_wheel' or joint_name == 'front_right_wheel' or \
-    #     joint_name == 'rear_left_wheel' or joint_name == 'rear_right_wheel':
-    #     wheel_joints.append(i)
     if joint_name in joints_list:
         wheel_joints.append(i)
         print(joint_name)
@@ -194,13 +187,6 @@ while True:
         cube_pos, _ = p.getBasePositionAndOrientation(cube_id1)
 
         # Clear the plot and draw the cube at the new position
-        # ax.clear()
-        # plot_cube(ax, cube_pos, cube_size)
-        # ax.set_xlim([-10, 10])
-        # ax.set_ylim([-10, 10])
-        # ax.set_zlim([0, 5])
-        # plt.draw()
-        # plt.pause(0.001)
 
         # Sleep to maintain a consistent simulation rate
         time.sleep(dt)
