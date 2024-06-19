@@ -1,38 +1,38 @@
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import casadi as ca
 import numpy as np
 import torch
-import torch.nn as nn
+import pybullet as p
+import pybullet_data
+import time
+import matplotlib.pyplot as plt
 import l4casadi as l4c
+import matplotlib.animation as animation
 
 from scipy.linalg import block_diag
 from torchvision import models
-from acados_template import AcadosModel, AcadosOcpSolver, AcadosOcp
+from acados_template import AcadosModel
+from controllers.mpc_differential_drive_obstacle_static import MPCController
+from models.differentialSimV2 import DiffSimulation
 
-# class ResNet18(nn.Module):
-#     def __init__(self, input_dim, output_dim):
-#         super().__init__()
-#         self.resnet = models.resnet18(pretrained=True)
-#         num_ftrs = self.resnet.fc.in_features
-#         self.resnet.fc = nn.Linear(num_ftrs, 512)
-#         self.hidden_layers = nn.ModuleList()
-#         for i in range(2):
-#             self.hidden_layers.append(nn.Linear(512, 512))
-#         self.out_layer = nn.Linear(512, output_dim)
-        
-#         # Model is not trained -- setting output to zero
-#         with torch.no_grad():
-#             self.out_layer.bias.fill_(0.)
-#             self.out_layer.weight.fill_(0.)
-        
-#     def forward(self, x):
-#         x = x.unsqueeze(1)  # Add a channel dimension
-#         x = x.repeat(1, 3, 1, 1)  # Repeat the input along the channel dimension
-#         x = self.resnet(x)
-#         x = x.view(x.size(0), -1)  # Flatten the output of ResNet18
-#         for layer in self.hidden_layers:
-#             x = torch.tanh(layer(x))
-#         x = self.out_layer(x)
-#         return x
+def inverse_kinematics(v, omega):
+
+    L = 0.5708  # meters
+
+    # Calculate wheel velocities
+    v_left = v - (omega * L / 2)
+    v_right = v + (omega * L / 2)
+
+    # Assign velocities to each wheel
+    v_front_left = v_left
+    v_rear_left = v_left
+    v_front_right = v_right
+    v_rear_right = v_right
+
+    return v_front_left, v_front_right, v_rear_left, v_rear_right
+
     
 class MultiLayerPerceptron(torch.nn.Module):
     def __init__(self):
@@ -77,6 +77,7 @@ class DifferentialDriveLearnedDynamics:
         controls = ca.vertcat(v, w)
 
         model_input = ca.vertcat(states, controls)
+
         res_model = self.learned_dyn(model_input)
 
         xdot = ca.MX.sym('xdot')
@@ -90,165 +91,402 @@ class DifferentialDriveLearnedDynamics:
             w
         ) + res_model
 
-        # Store to struct
-        model = ca.types.SimpleNamespace()
+        model = AcadosModel()
         model.x = states
         model.xdot = x_dot
         model.u = controls
         model.z = ca.vertcat([])
-        model.p = ca.vertcat([])
-        model.f_expl = f_expl
-        model.constraints = ca.vertcat([])
+        model.p = ca.MX.sym('x', 6)
+        model.f_expl_expr = f_expl
         model.name = 'differential_drive_dnn_mpc'
 
         return model
     
+def plot_state_errors(xs, yref_N):
+    # Extract the final state from the trajectory
+    final_state = xs[-1]
 
-class MPC:
-    def __init__(self, model, N, external_shared_lib_dir, external_shared_lib_name):
-        self.N = N
-        self.model = model
-        self.external_shared_lib_dir = external_shared_lib_dir
-        self.external_shared_lib_name = external_shared_lib_name
+    # Calculate the state errors
+    state_errors = np.abs(final_state - yref_N[:3])
 
-    @property
-    def solver(self):
-        return AcadosOcpSolver(self.ocp())
+    # Create labels for the states
+    state_labels = ['X', 'Y', 'Yaw']
+
+    # Set custom colors for the bars
+    colors = ['#1f77b4', '#ff7f0e', '#2ca02c']
+
+    # Create a figure and axis with larger size
+    fig, ax = plt.subplots(figsize=(10, 8))
+
+    # Plot the state errors as a bar plot with custom colors
+    bars = ax.bar(state_labels, state_errors, color=colors)
+
+    # Add labels and title with larger font sizes
+    ax.set_xlabel('State', fontsize=16)
+    ax.set_ylabel('Error', fontsize=16)
+    ax.set_title('State Errors', fontsize=20)
+
+    # Increase the font size of the tick labels
+    ax.tick_params(axis='both', labelsize=14)
+
+    # Add value labels to the bars
+    for bar in bars:
+        height = bar.get_height()
+        ax.text(bar.get_x() + bar.get_width() / 2, height,
+                f'{height:.2f}', ha='center', va='bottom', fontsize=12)
+
+    # Add a grid for better readability
+    ax.grid(True, linestyle='--', alpha=0.7)
+
+    # Adjust the layout and display the plot
+    fig.tight_layout()
+    plt.show()
+
+    # Save the plot with higher resolution
+    fig.savefig('state_errors.png', dpi=600, bbox_inches='tight')
+
+def plot_control_input(v, omega, output_path):
+
+    # Create an iteration array
+    iterations = range(len(v))
+
+    # Create a new figure and axis
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8, 6))
+
+    # Plot linear velocity
+    ax1.plot(iterations, v, linewidth=2)
+    ax1.set_xlabel('Iteration', fontsize=12)
+    ax1.set_ylabel('Linear Velocity (m/s)', fontsize=12)
+    ax1.set_title('Control Input: Linear Velocity', fontsize=14)
+    ax1.grid(True)
+
+    # Plot angular velocity
+    ax2.plot(iterations, omega, linewidth=2)
+    ax2.set_xlabel('Iteration', fontsize=12)
+    ax2.set_ylabel('Angular Velocity (rad/s)', fontsize=12)
+    ax2.set_title('Control Input: Angular Velocity', fontsize=14)
+    ax2.grid(True)
+
+    # Adjust spacing between subplots
+    fig.tight_layout(pad=3.0)
+
+    # Save the figure
+    plt.savefig(output_path, dpi=300, bbox_inches='tight')
+    plt.close(fig)
+
+def deaccelerate_control(v, omega, v_max, omega_max, t):
+    v = v_max * (1-np.exp(-100*t))
+    omega = omega_max * (1-np.exp(-100*t))
+
+    return v, omega
+
+def plot_state_errors(xs, yref_N):
+    # Extract the final state from the trajectory
+    final_state = xs[-1]
+
+    # Calculate the state errors
+    state_errors = np.abs(final_state - yref_N[:3])
+
+    # Create labels for the states
+    state_labels = ['X', 'Y', 'Yaw']
+
+    # Set custom colors for the bars
+    colors = ['#1f77b4', '#ff7f0e', '#2ca02c']
+
+    # Create a figure and axis with larger size
+    fig, ax = plt.subplots(figsize=(10, 8))
+
+    # Plot the state errors as a bar plot with custom colors
+    bars = ax.bar(state_labels, state_errors, color=colors)
+
+    # Add labels and title with larger font sizes
+    ax.set_xlabel('State', fontsize=16)
+    ax.set_ylabel('Error', fontsize=16)
+    ax.set_title('State Errors', fontsize=20)
+
+    # Increase the font size of the tick labels
+    ax.tick_params(axis='both', labelsize=14)
+
+    # Add value labels to the bars
+    for bar in bars:
+        height = bar.get_height()
+        ax.text(bar.get_x() + bar.get_width() / 2, height,
+                f'{height:.2f}', ha='center', va='bottom', fontsize=12)
+
+    # Add a grid for better readability
+    ax.grid(True, linestyle='--', alpha=0.7)
+
+    # Adjust the layout and display the plot
+    fig.tight_layout()
+    plt.show()
+
+    # Save the plot with higher resolution
+    fig.savefig('state_errors.png', dpi=600, bbox_inches='tight')
+
+def animate(i, xs, us, simX_history, cube_ids, ax, differential_robot, cube_size, yref_N, safe_distance):
+    # Clear the previous plot
+    ax.clear()
+
+    # Plot robot frame
+    differential_robot.generate_each_wheel_and_draw(ax, xs[i][0], xs[i][1], xs[i][2])
+
+    # Plot the goal point
+    ax.plot(yref_N[0], yref_N[1], color='red', marker='o', ms=10)
+
+    # Plot cube
+    for cube_id in cube_ids:
+        cube_pos, _ = p.getBasePositionAndOrientation(cube_id)
+        obstacle = plt.Rectangle((cube_pos[0] - cube_size, cube_pos[1] - cube_size), 2 * cube_size, 2 * cube_size, color='blue')
+        ax.add_patch(obstacle)
     
+    # the robot trajectory
+    xs_array = np.array(xs[:i+1])
+    ax.plot(xs_array[:, 0], xs_array[:, 1], 'r-', linewidth=1.5)
 
-    def ocp(self):
+    # Plot the prediction states
+    if i < len(simX_history):
+        simX = simX_history[i]
+        ax.plot(simX[:, 0], simX[:, 1], 'g--', linewidth=1.5)
 
-        model = self.model
+    # Plot the safety boundary circle
+    ax.add_patch(plt.Circle((xs[i][0], xs[i][1]), safe_distance, edgecolor='k', linestyle='--', facecolor='none', zorder=10))
 
-        t_horizons = 1.0
-        N = self.N
-
-        # Get model
-        model_ac = self.acados_model(model=model)
-        model_ac.p = model.p
-
-
-
-        nx = 3
-        nu = 2
-        ny = nx + nu
-        ny_e = nx
-
-        Q_mat = np.diag([15, 10, 35])
-        Q_mat_e = np.diag([15, 10, 35])
-        R_mat = np.diag([1, 0.1])
-
-        mpc = AcadosOcp()
-
-        mpc.model = model_ac
-        mpc.dims.N = N
-        mpc.dims.nx = nx
-        mpc.dims.nu = nu
-        mpc.dims.ny = ny
-        mpc.solver_options.tf = t_horizons
-
-        mpc.cost.cost_type = 'LINEAR_LS'
-        mpc.cost.cost_type_e = 'LINEAR_LS'
-
-        mpc.cost.W = block_diag(Q_mat, R_mat)
-        mpc.cost.W_e = Q_mat_e
-        Vx = np.zeros((ny, nx))
-        Vx[:nx, :nx] = np.eye(nx)
-        mpc.cost.Vx = Vx
-        mpc.cost.Vx_e = np.eye(nx)
-        Vu = np.zeros((ny, nu))
-        Vu[nx : nx + nu, 0:nu] = np.eye(nu)
-        mpc.cost.Vu = Vu
-        mpc.cost.yref = np.zeros((ny, ))
-        mpc.cost.yref_e = np.zeros((ny_e, ))
-
-        l4c_y_expr = None
-
-        mpc.constraints.x0 = np.array([0.0, 0.0, 0.0])
-        mpc.constraints.lbu = np.array([-10, -31.4])
-        mpc.constraints.ubu = np.array([10, 31.4])
-        mpc.constraints.idxbu = np.array([0, 1])
-
-        mpc.solver_options.qp_solver = 'FULL_CONDENSING_HPIPM'
-        mpc.solver_options.hessian_approx = 'GAUSS_NEWTON'
-        mpc.solver_options.integrator_type = 'ERK'
-        mpc.solver_options.nlp_solver_type = 'SQP_RTI'
-        mpc.solver_options.sim_method_num_stages = 4
-        mpc.solver_options.sim_method_num_steps = 3
-        mpc.solver_options.nlp_solver_max_iter = 100
-        mpc.solver_options.model_external_shared_lib_dir = self.external_shared_lib_dir
-        mpc.solver_options.model_external_shared_lib_name = self.external_shared_lib_name
-
-        return mpc
+    # Add a popup window on the robot
+    popup_text = f"Position: ({xs[i][0]:.2f}, {xs[i][1]:.2f})\nYaw: {xs[i][2]:.2f}"
+    ax.text(8, 10, popup_text, fontsize=10, ha='center', va='bottom',
+            bbox=dict(facecolor='white', edgecolor='black', boxstyle='round'))
     
-    def acados_model(self, model):
-        model_ac = AcadosModel()
-        model_ac.f_impl_expr = model.xdot - model.f_expl
-        model_ac.f_expl_expr = model.f_expl
-        model_ac.x = model.x
-        model_ac.xdot = model.xdot
-        model_ac.u = model.u
-        model_ac.name = model.name
-
-        return model_ac
+    # Popup window for the reference state
+    popup_text_ref = f"Position Ref: ({yref_N[0]:.2f}, {yref_N[1]:.2f})\nYaw: {yref_N[2]:.2f}"
+    ax.text(-7, 10, popup_text_ref, fontsize=10, ha='center', va='bottom',
+            bbox=dict(facecolor='white', edgecolor='black', boxstyle='round'))
     
-
+    # Set plot limits and labels
+    ax.set_xlim(-12, 12)
+    ax.set_ylim(-12, 12)
+    ax.set_xlabel('X')
+    ax.set_ylabel('Y')
+    ax.set_title('Differential Drive Robot Simulation')
 
 def run():
-    N = 10
+    # Init states
+    state_init = np.array([0.0, 0.0, 0.0])
+    control_init = np.array([0.0, 0.0])
 
-    input_dim = 5  
-    output_dim = 3  
+    # Current states
+    state_current = state_init
+    control_current = control_init
+
+    # Cost matrices
+    state_cost_matrix = 10*np.diag([5, 5, 9])
+    control_cost_matrix = np.diag([0.1, 0.01])
+    terminal_cost_matrix = 10*np.diag([5, 5, 9])
+
+    ## Constraints
+    state_lower_bound = np.array([-10.0, -10.0, -3.14])
+    state_upper_bound = np.array([10.0, 10.0, 3.14])
+    control_lower_bound = np.array([-10.0, -3.14])
+    control_upper_bound = np.array([10.0, 3.14])
+
+    # Obstacle
+    obstacles_positions = np.array([
+        [5.0, 3.0],
+        [3.5, 4.5],
+        [2.0, 3.0]
+    ])
+
+    obstacle_velocities = np.array([
+        [1.0, 0.0],
+        [1.0, 0.0],
+        [0.0, 1.0]
+    ])
+
+    obstacle_radii = np.array([0.5, 0.5, 0.5])
+    safe_distance = 0.3
+
+    # Simulation 
+    simulation = DiffSimulation()
+
+    # MPC params
+    N = 30
+    sampling_time = 0.01
+    Ts = N * sampling_time
+    Tsim = int(N / sampling_time)
+
+
+    # Track history 
+    xs = [state_init.copy()]
+    us = []
+    v_history = []
+    omega_history = []
+    simX_history = []
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = MultiLayerPerceptron().to(device)
-    model.load_state_dict(torch.load("saved_models/mlp_diff.pth", map_location=device))
+    model.load_state_dict(torch.load("saved_models/mlp_diff_300x100.pth", map_location=device))
     model.eval() 
 
     learned_dyn_model = l4c.L4CasADi(
-        model,
+        MultiLayerPerceptron().to(device),
         model_expects_batch_dim=True,
         name='learned_dynamics_differential_drive'
     )
 
     model = DifferentialDriveLearnedDynamics(learned_dyn_model)
-    solver = MPC(
-        model=model.model(),
+
+    solver = MPCController(
+        x0=state_init,
+        u0=control_init,
+        state_cost_matrix=state_cost_matrix,
+        control_cost_matrix=control_cost_matrix,
+        terminal_cost_matrix=terminal_cost_matrix,
+        state_lower_bound=state_lower_bound,
+        state_upper_bound=state_upper_bound,
+        control_lower_bound=control_lower_bound,
+        control_upper_bound=control_upper_bound,
+        obstacle_positions=obstacles_positions,
+        obstacle_radii=obstacle_radii,
+        safe_distance=safe_distance,
         N=N,
+        dt=sampling_time,
+        Ts=Ts,
         external_shared_lib_dir=learned_dyn_model.shared_lib_dir,
-        external_shared_lib_name=learned_dyn_model.name).solver
+        external_shared_lib_name=learned_dyn_model.name,
+        model=model.model(),
+        is_dnn=True,
+        cost_type='NONLINEAR_LS'
+    )
 
-    x = []
-    ts = 1.0 / N
+    # # Connect to the PyBullet server
+    physicsClient = p.connect(p.DIRECT)
+    p.setAdditionalSearchPath(pybullet_data.getDataPath())
 
-    tsim = 100
+    # Load urddf
+    plane_id = p.loadURDF("plane.urdf")
+    robot_id = p.loadURDF("/home/eroxii/ocp_ws/bullet3/data/husky/husky.urdf", [0, 0, 0.1])
 
-    # Initial state
-    x_init = np.array([0.0, 0.0, 0.0])
-    xt = x_init
+    # # Set gravity
+    p.setGravity(0, 0, -9.81)
 
-    # State and control references
-    state_ref = np.array([5.0, 5.0, np.pi/2])  
-    control_ref = np.array([0.0, 0.0]) 
+    # # Load the cube object
+    cube_size = 0.5
+    cube_mass = 1.0
+    cube_visual_shape_id = p.createVisualShape(shapeType=p.GEOM_BOX, halfExtents=[cube_size]*3, rgbaColor=[1, 0, 0, 1])
+    cube_collision_shape_id = p.createCollisionShape(shapeType=p.GEOM_BOX, halfExtents=[cube_size]*3)
+    cube_id1 = p.createMultiBody(baseMass=cube_mass, baseCollisionShapeIndex=cube_collision_shape_id,
+                                 baseVisualShapeIndex=cube_visual_shape_id,
+                                 basePosition=[obstacles_positions[0][0],obstacles_positions[0][1], cube_size])
+    cube_id2 = p.createMultiBody(baseMass=cube_mass, baseCollisionShapeIndex=cube_collision_shape_id,
+                                 baseVisualShapeIndex=cube_visual_shape_id, 
+                                 basePosition=[obstacles_positions[1][0],obstacles_positions[1][1], cube_size])
+    cude_id3 = p.createMultiBody(baseMass=cube_mass, baseCollisionShapeIndex=cube_collision_shape_id,
+                                 baseVisualShapeIndex=cube_visual_shape_id, 
+                                 basePosition=[obstacles_positions[2][0],obstacles_positions[2][1], cube_size])
 
-    for i in range(tsim):
-        solver.set(0, "lbx", xt)
-        solver.set(0, "ubx", xt)
+    # Set the fps
+    target_fps =240
+    timestep = 1 / target_fps
+    num_iterations = 1000
 
-        for j in range(N):
-            solver.set(j, "yref", np.concatenate((state_ref, control_ref)))
-        solver.set(N, "yref", state_ref[:3])
+    # Enable GPU
+    p.setRealTimeSimulation(1)
+    p.setPhysicsEngineParameter(enableFileCaching=0, numSolverIterations=10, numSubSteps=2)
+    p.setPhysicsEngineParameter(enableConeFriction=1)
+    p.setPhysicsEngineParameter(allowedCcdPenetration=0.0)
 
-        solver.solve()
 
-        xt = solver.get(1, "x")
-        ut = solver.get(0, "u")
+    # Get the joint indices for the wheel joints
+    num_joints = p.getNumJoints(robot_id)
+    wheel_joints = []
+    joints_list = ['front_left_wheel', 'front_right_wheel', 'rear_left_wheel', 'rear_right_wheel']
 
-        print(f"Predicted output: {output_tensor}")
+    for i in range(num_joints):
+        joint_info = p.getJointInfo(robot_id, i)
+        joint_name = joint_info[1].decode('utf-8')
 
-        x.append(xt)
+        if joint_name in joints_list:
+            wheel_joints.append(i)
+            print(joint_name)
 
-        print(f"Iteration {i+1}: Current State - x: {xt[0]:.2f}, y: {xt[1]:.2f}, yaw: {xt[2]:.2f}")
+    
+    cube_ids = [cube_id1, cube_id2, cude_id3]
 
+    simX = np.zeros((solver.mpc.dims.N+1, solver.mpc.dims.nx))
+    simU = np.zeros((solver.mpc.dims.N, solver.mpc.dims.nu))
+
+    # Target position
+    yref_N = np.array([5.0, 6.0, 1.57, 1.0, 0.0])
+
+
+    # Prepare simulation 
+    fig, ax = plt.subplots(figsize=(10, 10))
+    differential_robot = DiffSimulation()
+
+    p.setTimeStep(sampling_time)
+
+    # Configure video logging
+    log_id = p.startStateLogging(p.STATE_LOGGING_VIDEO_MP4, "diff_mpc_dnn_bullet.mp4")
+
+    for i in range(Tsim):
+        # Get robot current state
+        pos, ori = p.getBasePositionAndOrientation(robot_id)
+        vel, ang_vel = p.getBaseVelocity(robot_id)
+        euler = p.getEulerFromQuaternion(ori)
+        yaw = euler[2]
+
+        state_current = np.array([pos[0], pos[1], yaw])
+
+        print(f"Current state: {state_current}")
+
+        # Dynamic object
+        # obstacles_positions[:] += obstacle_velocities * sampling_time
+
+        # solve mpc
+        simX, simU = solver.solve_mpc(state_current, simX, simU, yref_N, yref_N[:3], obstacles_positions)
+
+        # Get the control inputs
+        u = simU[0, :]
+        v = u[0]
+        omega = u[1]
+
+        # v, omega = deaccelerate_control(v, omega, control_upper_bound[0], control_upper_bound[1], i)
+
+        # Apply the control inputs
+        v_history.append(v)
+        omega_history.append(omega)
+
+        v_front_left, v_front_right, v_rear_left, v_rear_right = inverse_kinematics(v, omega)
+
+        # Apply to each joint
+        p.setJointMotorControl2(robot_id, 2, p.VELOCITY_CONTROL, targetVelocity=v_front_left, maxVelocity=1.0)
+        p.setJointMotorControl2(robot_id, 3, p.VELOCITY_CONTROL, targetVelocity=v_front_right, maxVelocity=1.0)
+        p.setJointMotorControl2(robot_id, 4, p.VELOCITY_CONTROL, targetVelocity=v_rear_left, maxVelocity=1.0)
+        p.setJointMotorControl2(robot_id, 5, p.VELOCITY_CONTROL, targetVelocity=v_rear_right, maxVelocity=1.0)
+
+        # Update the history
+        xs.append(state_current)
+        us.append(u)
+        simX_history.append(simX.copy())
+
+        # Print Tsim
+        print(f"Tsim: {i}")
+    
+        # Step the simulation
+        p.stepSimulation()
+
+    # Create the animation
+    ani = animation.FuncAnimation(fig, animate, frames=len(xs), fargs=(xs, us, simX_history, cube_ids, ax, differential_robot, cube_size, yref_N, safe_distance), interval=1000, blit=False)
+
+    p.stopStateLogging(log_id)
+    # Save the animation as a video
+    ani.save('diff_mpc_dnn.mp4', writer='ffmpeg', fps=60)
+
+    plot_control_input(v_history, omega_history, 'diff_mpc_dnn.png')
+
+    plot_state_errors(xs, yref_N)
+
+    # Close the figure
+    plt.close(fig)
 
 if __name__ == "__main__":
     run()
