@@ -36,8 +36,8 @@ class MultiLayerPerceptron(torch.nn.Module):
         self.input_layer = torch.nn.Linear(input_dim, 512)
 
         hidden_layers = []
-        for i in range(2):
-            hidden_layers.append(torch.nn.Linear(512, 512))
+        for i in range(3):
+            hidden_layers.append(torch.nn.Linear(512,  512))
 
         self.hidden_layer = torch.nn.ModuleList(hidden_layers)
         self.out_layer = torch.nn.Linear(512, 3)
@@ -144,7 +144,7 @@ def train_mlp(states, controls, errors, num_epochs, batch_size, learning_rate):
     # Save the model
     save_dir = "saved_models"
     os.makedirs(save_dir, exist_ok=True)
-    model_save_path = os.path.join(save_dir, "mlp_diff.pth")
+    model_save_path = os.path.join(save_dir, "mlp_diff_3l.pth")
     torch.save(model.state_dict(), model_save_path)
 
     print(f"Model saved at {model_save_path}")

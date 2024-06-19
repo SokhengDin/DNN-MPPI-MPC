@@ -55,6 +55,8 @@ class MPPIAlgorithms:
             sigma: np.ndarray,
             stage_cost_weight: np.ndarray,
             terminal_cost_weight: np.ndarray,
+            obstacle_circles: np.ndarray,
+            safety_margin_rate: float,
             visualize_optimal_traj = True,
             visualze_sampled_trajs = True
         ) -> None:
@@ -77,6 +79,10 @@ class MPPIAlgorithms:
         self.terminal_cost_weight = terminal_cost_weight
         self.visualize_optimal_traj = visualize_optimal_traj
         self.visualze_sampled_trajs = visualze_sampled_trajs
+
+        self.obstacle_circles = obstacle_circles
+
+        self.safefy_margin_rate = safety_margin_rate
 
         # mppi variables 
         self.u_prev = np.zeros((self.T, self.dim_u))
@@ -233,6 +239,8 @@ class MPPIAlgorithms:
                         self.stage_cost_weight[1] * (y - ref_y)**2 + \
                         self.stage_cost_weight[2] * (yaw - ref_yaw)**2 
         
+        stage_cost += self._is_collided(x_t) * 1.0e10
+
         return stage_cost
 
 
@@ -245,6 +253,8 @@ class MPPIAlgorithms:
         terminal_cost = self.terminal_cost_weight[0] * (x - ref_x)**2 + \
                         self.terminal_cost_weight[1] * (y - ref_y)**2 + \
                         self.terminal_cost_weight[2] * (yaw - ref_yaw)**2
+        
+        terminal_cost += self._is_collided(x_t) * 1.0e10
         
         return terminal_cost
 
@@ -287,6 +297,20 @@ class MPPIAlgorithms:
         v[0] = np.clip(v[0], -self.max_speed, self.max_speed)
         v[1] = np.clip(v[1], -self.max_omega, self.max_omega)
         return v
+
+    def _is_collided(self, x_t: np.ndarray) -> bool:
+        
+        robot_radius = 0.5
+        safety_margin_rate = self.safefy_margin_rate
+        robot_radius = robot_radius * safety_margin_rate
+
+        x, y, _ = x_t
+
+        for obs in self.obstacle_circles:
+            obs_x, obs_y, obs_r = obs
+            if (x - obs_x)**2 + (y - obs_y)**2 < (robot_radius + obs_r)**2:
+                return 1.0
+        return 0.0
     
 def plot_trajectories(diff_frame, diff_drive, mppi, delta_t, ref_path, tSim):
     fig, ax = plt.subplots()
@@ -298,6 +322,7 @@ def plot_trajectories(diff_frame, diff_drive, mppi, delta_t, ref_path, tSim):
 
     # Initialize empty lists for artists
     robot_artists = []
+    obstacle_artists = []
     optimal_traj_artist, = ax.plot([], [], color='#990099', linestyle="solid", linewidth=1.5, zorder=5)
     sampled_traj_artists = []
     ref_traj_artist = None
@@ -316,6 +341,10 @@ def plot_trajectories(diff_frame, diff_drive, mppi, delta_t, ref_path, tSim):
             artist.remove()
         robot_artists.clear()
 
+        for artist in obstacle_artists:
+            artist.remove()
+        obstacle_artists.clear()
+
         # Draw the robot
         robot_artists.extend(diff_frame.generate_each_wheel_and_draw(x, y, yaw))
         for artist in robot_artists:
@@ -331,6 +360,13 @@ def plot_trajectories(diff_frame, diff_drive, mppi, delta_t, ref_path, tSim):
         for artist in sampled_traj_artists:
             artist.remove()
         sampled_traj_artists.clear()
+
+        # Draw obstacle
+        for obs in mppi.obstacle_circles:
+            obs_x, obs_y, obs_r = obs
+            obstacle_artist = plt.Circle((obs_x, obs_y), obs_r, color='red', zorder=6)
+            ax.add_artist(obstacle_artist)
+            obstacle_artists.append(obstacle_artist)
 
         # Draw the sampled trajectories from mppi
         if sampled_traj_list.any():
@@ -369,7 +405,7 @@ def plot_trajectories(diff_frame, diff_drive, mppi, delta_t, ref_path, tSim):
         return robot_artists + [optimal_traj_artist] + sampled_traj_artists + [ref_traj_artist]
 
     ani = FuncAnimation(fig, animate, frames=tSim, interval=50, blit=True, repeat=False)
-    ani.save("mppi_differential_drive.mp4", writer='ffmpeg', fps=30)
+    ani.save("mppi_differential_drive_obs.mp4", writer='ffmpeg', fps=30)
 
 def generate_lemniscate_trajectory(a, num_points=100):
     t = np.linspace(-np.pi, np.pi, num_points)
@@ -392,7 +428,7 @@ def generate_point_trajectory(start_point, end_point, num_points=100):
 if __name__ == "__main__":
     # Initialize the differential drive model
     init_x = np.array([0.0, 0.0, 0.0])
-    goal_point = np.array([10.0, -5.0])
+    goal_point = np.array([5.0, 5.0])
     tSim = 1000
     diff_drive = DifferentialDrive(init_x)
 
@@ -400,15 +436,20 @@ if __name__ == "__main__":
     delta_t = 0.1
     max_speed = 5.0
     max_omega = 3.14
-    num_samples_K = 100
-    num_horizons_T = 10
-    param_exploration = 0.0001
-    param_lambda = 1.0 
-    param_alpha = 0.2
+    num_samples_K = 500
+    num_horizons_T = 20
+    param_exploration = 0.05
+    param_lambda = 10.0 
+    param_alpha = 0.98
     sigma = np.array([[0.1, 0.0], [0.0, 0.01]])
-    stage_cost_weight = 1*np.array([5.0, 5.0, 10])
-    terminal_cost_weight = 1*np.array([5.0, 5.0, 10])
+    stage_cost_weight = 10*np.array([5.0, 6.0, 9])
+    terminal_cost_weight = 10*np.array([5.0, 6.0, 9])
 
+    obstacle_circles = np.array([
+    [2.0, 2.0, 0.4], 
+    [3.0, 3.5, 0.4]])
+
+    safety_margin_rate = 0.5
     # Generate reference path
     center_x = 0.0
     center_y = 0.0
@@ -434,6 +475,8 @@ if __name__ == "__main__":
         param_lambda=param_lambda,
         param_alpha=param_alpha,
         sigma=sigma,
+        obstacle_circles=obstacle_circles,
+        safety_margin_rate=safety_margin_rate,
         stage_cost_weight=stage_cost_weight,
         terminal_cost_weight=terminal_cost_weight
     )

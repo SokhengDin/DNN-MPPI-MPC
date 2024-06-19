@@ -8,9 +8,7 @@ import casadi as ca
 
 from scipy.linalg import block_diag
 from acados_template import AcadosModel, AcadosOcp, AcadosOcpSolver, AcadosSimSolver, AcadosSim
-from models.differentialSim import DifferentialSimulation
 from models.differentialSimV2 import DiffSimulation
-from utils.plot_differential_drive import Simulation
 from typing import Tuple
 
 def plot_arrow(x, y, yaw, length=0.05, width=0.3, fc="b", ec="k"):
@@ -26,14 +24,14 @@ def export_casadi_model():
 
     # differential model setup 
     ## Define the states
-    x = ca.SX.sym('x')
-    y = ca.SX.sym('y')
-    yaw = ca.SX.sym('yaw')
+    x = ca.MX.sym('x')
+    y = ca.MX.sym('y')
+    yaw = ca.MX.sym('yaw')
     states = ca.vertcat(x, y, yaw)
 
     ## Define the inputs
-    v = ca.SX.sym('v')
-    w = ca.SX.sym('w')
+    v = ca.MX.sym('v')
+    w = ca.MX.sym('w')
     controls = ca.vertcat(v, w)
 
     ## Define the system equations \dot(x) = f(x,u)
@@ -44,9 +42,9 @@ def export_casadi_model():
     )
 
     ## Define implicit DAE
-    xdot = ca.SX.sym('xdot')
-    ydot = ca.SX.sym('ydot')
-    yawdot = ca.SX.sym('yawdot')
+    xdot = ca.MX.sym('xdot')
+    ydot = ca.MX.sym('ydot')
+    yawdot = ca.MX.sym('yawdot')
     dae = ca.vertcat(xdot, ydot, yawdot)
 
     ## Define dynamics system
@@ -60,7 +58,7 @@ def export_casadi_model():
     model.x = states
     model.u = controls
     model.z = []
-    model.p = ca.SX.sym('x', 6)
+    model.p = ca.MX.sym('x', 6)
     model.xdot = dae
     model.f_expl_expr = f_expl
     model.f_impl_expr = f_impl
@@ -75,8 +73,6 @@ class MPCController:
             self,
             x0: np.ndarray,
             u0: np.ndarray,
-            # goal_trajectory: np.ndarray,
-            # goal_control: np.ndarray,
             state_cost_matrix: np.ndarray,
             control_cost_matrix: np.ndarray,
             terminal_cost_matrix: np.ndarray,
@@ -90,6 +86,10 @@ class MPCController:
             N: int,
             dt: float,
             Ts: float,
+            external_shared_lib_dir: str,
+            external_shared_lib_name: str,
+            model: AcadosModel = None,
+            is_dnn: bool = False,
             cost_type: str = 'LINEAR_LS'
               
         ) -> None:
@@ -122,14 +122,21 @@ class MPCController:
         #     x0_initial=x0
         # )
 
+        self.is_dnn = is_dnn
+
         # Export the Casadi Model
         self.model = export_casadi_model()
-
+        
+        if self.is_dnn:
+            self.model = model
 
         self.obstacle_positions = obstacle_positions
         self.obstacle_radii = obstacle_radii
         self.safe_distance = safe_distance
 
+        # Set the external lib share
+        self.external_shared_lib_dir = external_shared_lib_dir
+        self.external_shared_lib_name = external_shared_lib_name
 
         # Create the ACADOS solver
         self.mpc_solver, self.mpc = self.create_mpc_solver(x0)
@@ -146,6 +153,7 @@ class MPCController:
         nu = model.u.size()[0]
         ny = nx + nu
         ny_e = nx
+        ny_p = model.p.size()
 
         # set dimensions
         mpc.dims.N = self.N
@@ -169,8 +177,10 @@ class MPCController:
             mpc.cost.Vx = Vx
             mpc.cost.Vx_e = np.eye(nx)
             Vu = np.zeros((ny, nu))
-            Vu[-nu:, -nu:] = np.eye(nu)
+            Vu[nx : nx + nu, 0:nu] = np.eye(nu)
             mpc.cost.Vu = Vu
+            mpc.cost.yref = np.zeros((ny, ))
+            mpc.cost.yref_e = np.zeros((ny_e, ))
 
         elif self.cost_type == 'NONLINEAR_LS':
             mpc.cost.cost_type = 'NONLINEAR_LS'
@@ -203,13 +213,21 @@ class MPCController:
         mpc.constraints.lh = np.zeros((num_obstacles,))
         mpc.constraints.uh = np.full((num_obstacles,), 1e8)
 
-        obstacle_pos_sym = ca.SX.sym('obstacle_pos', 2, num_obstacles)
+        obstacle_pos_sym = ca.MX.sym('obstacle_pos', 2, num_obstacles)
 
         mpc.model.p = ca.vertcat(mpc.model.p, ca.vec(obstacle_pos_sym))
         mpc.model.con_h_expr = ca.vertcat(*[
             (model.x[0] - obstacle_pos_sym[0, i])**2 + (model.x[1] - obstacle_pos_sym[1, i])**2 - (self.obstacle_radii[i] + self.safe_distance)**2
             for i in range(num_obstacles)
         ])
+
+
+        if self.is_dnn:
+            mpc.model.con_h_expr = ca.vertcat(*[
+                (model.x[0] - ca.MX(obstacle_pos_sym[0, i]))**2 + (model.x[1] - ca.MX(obstacle_pos_sym[1, i]))**2 - (self.obstacle_radii[i] + self.safe_distance)**2
+                for i in range(num_obstacles)
+            ])
+
         mpc.parameter_values = np.zeros(mpc.model.p.size()[0])
 
         for i in range(num_obstacles):
@@ -228,14 +246,15 @@ class MPCController:
         # Set prediction horizons
         mpc.solver_options.tf = self.Ts
 
-        try:
-            print("Creating MPC solver...")
-            mpc_solver = AcadosOcpSolver(mpc, json_file='mpc_differential_drive.json')
-            print("MPC solver created successfully.")
-            return mpc_solver, mpc
-        except Exception as e:
-            print("Error creating MPC solver:", e)
-            raise
+        # Set the shared library options
+        if self.is_dnn:
+            mpc.solver_options.model_external_shared_lib_dir = self.external_shared_lib_dir
+            mpc.solver_options.model_external_shared_lib_name = self.external_shared_lib_name
+
+        print("Creating MPC solver...")
+        mpc_solver = AcadosOcpSolver(mpc, json_file='mpc_differential_drive.json')
+        print("MPC solver created successfully.")
+        return mpc_solver, mpc
 
     def create_sim_solver(self) -> AcadosSimSolver:
         sim = AcadosSim()
@@ -300,8 +319,8 @@ class MPCController:
         # Solve the MPC problem
         status = self.mpc_solver.solve()
 
-        if status != 0:
-            raise Exception(f'Acados returned status {status}')
+        # if status != 0:
+        #     raise Exception(f'Acados returned status {status}')
 
         for i in range(self.mpc.dims.N):
             self.mpc_solver.set(i, "yref", yref)
@@ -365,9 +384,9 @@ if __name__ == "__main__":
     control_current = control_init
 
     ## Cost Matrices
-    state_cost_matrix = np.diag([750.0, 750.0, 900.0])
+    state_cost_matrix = np.diag([7, 7, 9])
     control_cost_matrix = np.diag([1, 0.1])
-    terminal_cost_matrix = np.diag([750.0, 750.0, 900.0])
+    terminal_cost_matrix = np.diag([7, 7, 9])
 
     ## Constraints
     state_lower_bound = np.array([-10.0, -10.0, -3.14])

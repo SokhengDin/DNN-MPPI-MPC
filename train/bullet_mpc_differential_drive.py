@@ -6,7 +6,7 @@ import pybullet_data
 import numpy as np
 import time
 import matplotlib.pyplot as plt
-from controllers.mpc_differential_drive_obstacle_dynamic import MPCController
+from controllers.mpc_differential_drive_obstacle_static import MPCController
 from typing import Tuple
 from mpl_toolkits.mplot3d import Axes3D
 from matplotlib.animation import FuncAnimation
@@ -293,12 +293,14 @@ mpc = MPCController(
     state_upper_bound=state_upper_bound,
     control_lower_bound=control_lower_bound,
     control_upper_bound=control_upper_bound,
-    obstacle_positions=[],
-    obstacle_radii=[],
+    obstacle_positions=obstacle_positions,
+    obstacle_radii=obstacle_radii,
     safe_distance=safe_distance,
     N=N,
     dt=timestep,
     Ts=Ts,
+    external_shared_lib_dir='Differential_Drive_Static',
+    external_shared_lib_name='Differential_Drive_Static',
     cost_type='NONLINEAR_LS'
 )
 
@@ -324,7 +326,6 @@ print("Wheel joints:", wheel_joints)
 # Simulation loop
 state_current = state_init
 control_current = control_init
-
 
 
 # Collect data for system identification

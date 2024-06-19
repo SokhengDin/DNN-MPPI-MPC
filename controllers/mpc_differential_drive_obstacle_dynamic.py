@@ -4,6 +4,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
+from matplotlib.patches import Circle
 import casadi as ca
 
 from scipy.linalg import block_diag
@@ -60,7 +61,7 @@ def export_casadi_model():
     model.x = states
     model.u = controls
     model.z = []
-    # model.p = ca.SX.sym('x', 12) 
+    model.p = ca.SX.sym('x', 6) 
     model.xdot = dae
     model.f_expl_expr = f_expl
     model.f_impl_expr = f_impl
@@ -135,7 +136,7 @@ class MPCController:
         self.mpc_solver, self.mpc = self.create_mpc_solver(x0)
 
         # Create the ACADOS simulator
-        # self.sim_solver = self.create_sim_solver()
+        self.sim_solver = self.create_sim_solver()
 
     def create_mpc_solver(self, x0: np.ndarray) -> Tuple[AcadosOcpSolver, AcadosOcp]:
         mpc = AcadosOcp()
@@ -146,13 +147,13 @@ class MPCController:
         nu = model.u.size()[0]
         ny = nx + nu
         ny_e = nx
-        # ny_p = model.p.size()[0]
+        ny_p = model.p.size()[0]
 
         # set dimensions
         mpc.dims.N = self.N
         mpc.dims.nx = nx
         mpc.dims.nu = nu
-        # mpc.dims.np = ny_p
+        mpc.dims.np = ny_p
 
         # Set cost
         Q_mat = self.state_cost_matrix
@@ -203,21 +204,21 @@ class MPCController:
         mpc.constraints.idxbu = np.arange(nu)
 
         # Define obstacle avoidance constraints
-        # num_obstacles = len(self.obstacle_positions)
-        # mpc.constraints.lh = np.zeros((num_obstacles,))
-        # mpc.constraints.uh = np.full((num_obstacles,), 1e8)
+        num_obstacles = len(self.obstacle_positions)
+        mpc.constraints.lh = np.zeros((num_obstacles,))
+        mpc.constraints.uh = np.full((num_obstacles,), 1e8)
 
-        # obstacle_pos_sym = ca.SX.sym('obstacle_pos', 2, num_obstacles)
+        obstacle_pos_sym = ca.SX.sym('obstacle_pos', 2, num_obstacles)
 
-        # mpc.model.p = ca.vertcat(mpc.model.p, ca.vec(obstacle_pos_sym))
-        # mpc.model.con_h_expr = ca.vertcat(*[
-        #     (model.x[0] - obstacle_pos_sym[0, i])**2 + (model.x[1] - obstacle_pos_sym[1, i])**2 - (self.obstacle_radii[i] + self.safe_distance)**2
-        #     for i in range(num_obstacles)
-        # ])
-        # mpc.parameter_values = np.zeros(mpc.model.p.size()[0])
+        mpc.model.p = ca.vertcat(mpc.model.p, ca.vec(obstacle_pos_sym))
+        mpc.model.con_h_expr = ca.vertcat(*[
+            (model.x[0] - obstacle_pos_sym[0, i])**2 + (model.x[1] - obstacle_pos_sym[1, i])**2 - (self.obstacle_radii[i] + self.safe_distance)**2
+            for i in range(num_obstacles)
+        ])
+        mpc.parameter_values = np.zeros(mpc.model.p.size()[0])
 
-        # for i in range(num_obstacles):
-        #     mpc.constraints.lh[i] = (self.obstacle_radii[i] + self.safe_distance)**2
+        for i in range(num_obstacles):
+            mpc.constraints.lh[i] = (self.obstacle_radii[i] + self.safe_distance)**2
 
 
         # Set solver options
@@ -231,7 +232,7 @@ class MPCController:
         mpc.solver_options.qp_solver_cond_N = self.N
 
         # Set prediction horizons
-        mpc.solver_options.tf = self.Ts
+        mpc.solver_options.tf = self.dt * self.N
 
         try:
             print("Creating MPC solver...")
@@ -285,11 +286,11 @@ class MPCController:
         self.mpc_solver.set(0, "ubx", x0)
 
         # Set the obstacle positions
-        # param_values = obstacle_positions.flatten()
+        param_values = np.concatenate((np.zeros(6), obstacle_positions.flatten()))
 
-        # # Set the obstacle positions in the solver
-        # for i in range(self.N+1):
-        #     self.mpc_solver.set(i, 'p', param_values)
+        # Set the obstacle positions in the solver
+        for i in range(self.N+1):
+            self.mpc_solver.set(i, 'p', param_values)
 
         # Set reference trajectory
         for i in range(self.mpc.dims.N):
@@ -370,40 +371,40 @@ if __name__ == "__main__":
     control_current = control_init
 
     ## Cost Matrices
-    state_cost_matrix = np.diag([750.0, 750.0, 900.0])
+    state_cost_matrix = 45*np.diag([55.5, 75.0, 165.0])
     control_cost_matrix = np.diag([1, 1])
-    terminal_cost_matrix = np.diag([750.0, 750.0, 900.0])
+    terminal_cost_matrix = 45*np.diag([55.5, 75.0, 165.0])
 
     ## Constraints
     state_lower_bound = np.array([-10.0, -10.0, -3.14])
     state_upper_bound = np.array([10.0, 10.0, 3.14])
-    control_lower_bound = np.array([-30.0, -31.4])
-    control_upper_bound = np.array([30.0, 31.4])
+    control_lower_bound = np.array([-30.0, -10])
+    control_upper_bound = np.array([30.0, 10])
 
     # Define multiple obstacles
     obstacle_positions = np.array([
-        [2.0, 1.0],  # Obstacle 1 position (x, y)
-        [3.0, 3.0],  # Obstacle 2 position (x, y)
-        [2.0, 6.0]   # Obstacle 3 position (x, y)
+        [2.0, 1.0],  
+        [3.0, 3.0],  
+        [2.0, 6.0]   
     ])
 
     # Define obstacle velocities
-    obstacle_velocities = 10.0*np.array([
-        [0.3, .6],   # Velocity of obstacle 1 (vx, vy)
-        [0.6, 0.],  # Velocity of obstacle 2 (vx, vy)
-        [0.5, 0.1]    # Velocity of obstacle 3 (vx, vy)
+    obstacle_velocities = 15.0*np.array([
+        [0.3, .6],   
+        [0.6, 0.],  
+        [0.5, 0.1]    
     ])
 
     obstacle_radii = np.array([0.5, 0.2, 0.4])  # Radii of the obstacles
-    safe_distance = 0.3
+    safe_distance = 0.2
 
     # Simulation
     simulation = DifferentialSimulation()
 
     ## Prediction Horizon
-    N = 20
+    N = 30
     sampling_time = 0.01
-    Ts = 0.5
+    Ts = N * sampling_time
     Tsim = int(N/sampling_time)
 
     ## Tracks history
@@ -427,7 +428,7 @@ if __name__ == "__main__":
         N=N,
         dt=sampling_time,
         Ts=Ts,
-        cost_type='LINEAR_LS'
+        cost_type='NONLINEAR_LS'
     )
 
     # Set up the ffmpeg writer
@@ -449,7 +450,7 @@ if __name__ == "__main__":
         try:
             # Determine the reference point from the goal trajectory
             state_ref = np.array([6.0, 6.0, 0.0])
-            control_ref = np.array([30.0, 1.57])
+            control_ref = np.array([0.0, 0])
             yref = np.concatenate([state_ref, control_ref])
             yref_N = state_ref  # Terminal state reference
 
@@ -463,7 +464,8 @@ if __name__ == "__main__":
             print('State:', state_current)
 
             # Apply the control input to the system
-            x1 = mpc.update_stateRungeKutta(state_current, u)
+            # x1 = mpc.update_stateRungeKutta(state_current, u)
+            x1 = mpc.update_state(state_current, u)
 
             # Update obstacle positions based on their velocities
             obstacle_positions[:] += obstacle_velocities * sampling_time
@@ -478,10 +480,12 @@ if __name__ == "__main__":
             ax.clear()
 
             # Plot the race car
-            plot_arrow(state_current[0], state_current[1], state_current[2], length=0.5, width=0.2, fc="r", ec="k")
-            differential_robot.generate_each_wheel_and_draw(state_current[0], state_current[1], state_current[2])
-            
+            differential_robot.generate_each_wheel_and_draw(ax, state_current[0], state_current[1], state_current[2])
 
+            # Draw circle around robot
+            circle = Circle((state_current[0], state_current[1]), safe_distance, edgecolor='r', facecolor='none', linestyle='--', alpha=0.5)
+            ax.add_patch(circle)
+        
             # Plot the goal point
             ax.plot(state_ref[0], state_ref[1], 'bo', markersize=10)
 
@@ -495,7 +499,7 @@ if __name__ == "__main__":
             ax.plot(xs_array[:, 0], xs_array[:, 1], 'r-', linewidth=1.5)
 
             # Plot the predicted trajectory using dot stars
-            ax.plot(simX[:, 0], simX[:, 1], 'g*', markersize=8)
+            ax.plot(simX[:, 0], simX[:, 1], 'g--', markersize=8)
 
             # Set plot limits and labels
             ax.set_xlim(-2, 10)

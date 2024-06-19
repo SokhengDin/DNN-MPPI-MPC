@@ -10,8 +10,8 @@ class CasadiMPCController:
         self.state_bounds = state_bounds
         self.control_bounds = control_bounds
 
-        self.nx = 4  # Number of states
-        self.nu = 2  # Number of controls
+        self.nx = 4  
+        self.nu = 2 
 
         # Define the model equations
         self.model = self._create_model()
@@ -36,7 +36,7 @@ class CasadiMPCController:
         rhs = ca.vertcat(
             v * ca.cos(yaw),
             v * ca.sin(yaw),
-            v * ca.tan(delta) / 0.325,  # Wheelbase length
+            v * ca.tan(delta) / 0.325, 
             a
         )
 
@@ -75,10 +75,16 @@ class CasadiMPCController:
             cost_fn += ca.mtimes(con_err.T, self.R) @ con_err
 
         # Constraints
-        g = []
+        g = [X[:, 0] - X_ref[:, 0]]
         for k in range(self.N):
-            x_next = self.model(X[:, k], U[:, k]) * self.dt + X[:, k]
+            k1 = self.model(X[:, k], U[:, k])
+            k2 = self.model(X[:, k] + (self.dt / 2) * k1, U[:, k])
+            k3 = self.model(X[:, k] + (self.dt / 2) * k2, U[:, k])
+            k4 = self.model(X[:, k] + self.dt * k3, U[:, k])
+            x_next = X[:, k] + (self.dt / 6) * (k1 + 2*k2 + 2*k3 + k4)
             g.append(X[:, k + 1] - x_next)
+
+        cost_fn = cost_fn + ca.mtimes((X[:, N] - X_ref[:, N]).T, self.Q) @ (X[:, N] - X_ref[:, N])
 
         # Optimization variables
         opt_vars = ca.vertcat(
@@ -102,8 +108,10 @@ class CasadiMPCController:
 
         # NLP solver options
         opts = {
+            'ipopt.max_iter': 5000,
             'ipopt.print_level': 0,
-            'ipopt.sb': 'yes',
+            'ipopt.acceptable_tol': 1e-6,
+            'ipopt.acceptable_obj_change_tol': 1e-4,
             'print_time': 0
         }
 
@@ -112,42 +120,22 @@ class CasadiMPCController:
 
         return solver
 
-    def solve(self, initial_state, target_state, control_ref):
-        # Set initial state and target state
-        X_ref = ca.repmat(ca.vertcat(target_state), 1, self.N + 1)
-        U_ref = ca.repmat(ca.vertcat(control_ref), 1, self.N)
+    
+    def update_state(self, x, u):
+        k1 = self.model(x, u)
+        k2 = self.model(x + (self.dt / 2) * k1, u)
+        k3 = self.model(x + (self.dt / 2) * k2, u)
+        k4 = self.model(x + self.dt * k3, u)
 
-        # Set lower and upper bounds for states and controls
-        lbx = ca.vertcat(
-            ca.repmat(self.state_bounds[:, 0], self.N + 1),
-            ca.repmat(self.control_bounds[:, 0], self.N)
-        )
-        ubx = ca.vertcat(
-            ca.repmat(self.state_bounds[:, 1], self.N + 1),
-            ca.repmat(self.control_bounds[:, 1], self.N)
-        )
+        x_next = x + (self.dt / 6) * (k1 + 2*k2 + 2*k3 + k4)
 
-        # Set initial guess for optimization variables
-        x0 = ca.vertcat(
-            ca.repmat(ca.vertcat(initial_state), self.N + 1),
-            ca.repmat(ca.DM.zeros(self.nu), self.N)
-        )
+        return x_next
 
-        # Solve the NLP problem
-        sol = self.solver(x0=x0, lbx=lbx, ubx=ubx, p=ca.vertcat(X_ref.reshape((-1, 1)), U_ref.reshape((-1, 1))))
-
-        # Extract optimal control input
-        u_opt = ca.reshape(sol['x'][-self.N * self.nu:], self.nu, self.N)
-
-        return u_opt[:, 0]
-
-
-# Example usage in main function
 if __name__ == "__main__":
-    # Set up the MPC controller
-    dt = 0.1
+
+    dt = 0.01
     N = 20
-    Q = np.diag([1, 1, 1, 1])
+    Q = np.diag([10, 10, 1, 1])
     R = np.diag([0.1, 0.1])
     state_bounds = np.array([[-10, 10], [-10, 10], [-np.pi, np.pi], [-5, 5]])
     control_bounds = np.array([[-1, 1], [-0.5, 0.5]])
@@ -155,18 +143,67 @@ if __name__ == "__main__":
     mpc_controller = CasadiMPCController(dt, N, Q, R, state_bounds, control_bounds)
 
     # Simulate the system
-    simulation_steps = 100
+    simulation_steps = int(20 / dt)  
     current_state = np.array([0, 0, 0, 0])
     target_state = np.array([5, 5, 0, 0])
-    control_ref = np.array([0, 0])
+    control_ref = np.array([1, 0])
+
+    # Prepare variables for optimization
+    lbx = ca.DM.zeros((mpc_controller.nx * (N + 1) + mpc_controller.nu * N, 1))
+    ubx = ca.DM.zeros((mpc_controller.nx * (N + 1) + mpc_controller.nu * N, 1))
+
+    lbx[0: mpc_controller.nx * (N + 1):mpc_controller.nx] = -10
+    lbx[1: mpc_controller.nx * (N + 1):mpc_controller.nx] = -10
+    lbx[2: mpc_controller.nx * (N + 1):mpc_controller.nx] = -np.pi
+    lbx[3: mpc_controller.nx * (N + 1):mpc_controller.nx] = -5
+
+    ubx[0: mpc_controller.nx * (N + 1):mpc_controller.nx] = 10
+    ubx[1: mpc_controller.nx * (N + 1):mpc_controller.nx] = 10
+    ubx[2: mpc_controller.nx * (N + 1):mpc_controller.nx] = np.pi
+    ubx[3: mpc_controller.nx * (N + 1):mpc_controller.nx] = 5
+
+    lbx[mpc_controller.nx * (N + 1)  : mpc_controller.nx * (N + 1) + mpc_controller.nu * N: mpc_controller.nu ] = control_bounds[0, 0]
+    lbx[mpc_controller.nx * (N + 1)+1: mpc_controller.nx * (N + 1) + mpc_controller.nu * N: mpc_controller.nu ] = control_bounds[1, 0]
+
+    ubx[mpc_controller.nx * (N + 1)  : mpc_controller.nx * (N + 1) + mpc_controller.nu * N: mpc_controller.nu ] = control_bounds[0, 1]
+    ubx[mpc_controller.nx * (N + 1)+1: mpc_controller.nx * (N + 1) + mpc_controller.nu * N: mpc_controller.nu ] = control_bounds[1, 1]
+
+    lbg = ca.DM.zeros((mpc_controller.nx * (N + 1), 1))
+    ubg = ca.DM.zeros((mpc_controller.nx * (N + 1), 1))
 
     for _ in range(simulation_steps):
-        # Solve the MPC problem
-        optimal_control = mpc_controller.solve(current_state, target_state, control_ref)
+        X_ref = ca.repmat(target_state, 1, N + 1)
+        U_ref = ca.repmat(control_ref, 1, N)
 
-        # Apply the optimal control to the system
-        current_state = mpc_controller.model(current_state, optimal_control).full().flatten()
+        x0 = ca.vertcat(
+            ca.repmat(current_state, 1, N + 1).reshape((-1, 1)),
+            ca.DM.zeros((mpc_controller.nu * N, 1))
+        )
 
+        p = ca.vertcat(
+            X_ref.reshape((-1, 1)),
+            U_ref.reshape((-1, 1))
+        )
+
+        sol = mpc_controller.solver(
+            x0=x0,
+            lbx=lbx,
+            ubx=ubx,
+            lbg=lbg,
+            ubg=ubg,
+            p=p
+        )
+
+        X_opt = ca.reshape(sol['x'][:mpc_controller.nx * (N + 1)], mpc_controller.nx, N + 1)
+        U_opt = ca.reshape(sol['x'][mpc_controller.nx * (N + 1):], mpc_controller.nu, N)
+
+        # Extract the first optimal control input
+        optimal_control = np.array(U_opt[:, 0].full()).flatten()
+
+        # Apply the optimal control to the system and update the state
+        current_state = mpc_controller.update_state(current_state, optimal_control)
+
+        # Print the current state
         print("Current state:", current_state)
 
     print("Final state:", current_state)
