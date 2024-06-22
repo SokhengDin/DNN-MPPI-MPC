@@ -102,49 +102,6 @@ class DifferentialDriveLearnedDynamics:
 
         return model
     
-def plot_state_errors(xs, yref_N):
-    # Extract the final state from the trajectory
-    final_state = xs[-1]
-
-    # Calculate the state errors
-    state_errors = np.abs(final_state - yref_N[:3])
-
-    # Create labels for the states
-    state_labels = ['X', 'Y', 'Yaw']
-
-    # Set custom colors for the bars
-    colors = ['#1f77b4', '#ff7f0e', '#2ca02c']
-
-    # Create a figure and axis with larger size
-    fig, ax = plt.subplots(figsize=(10, 8))
-
-    # Plot the state errors as a bar plot with custom colors
-    bars = ax.bar(state_labels, state_errors, color=colors)
-
-    # Add labels and title with larger font sizes
-    ax.set_xlabel('State', fontsize=16)
-    ax.set_ylabel('Error', fontsize=16)
-    ax.set_title('State Errors', fontsize=20)
-
-    # Increase the font size of the tick labels
-    ax.tick_params(axis='both', labelsize=14)
-
-    # Add value labels to the bars
-    for bar in bars:
-        height = bar.get_height()
-        ax.text(bar.get_x() + bar.get_width() / 2, height,
-                f'{height:.2f}', ha='center', va='bottom', fontsize=12)
-
-    # Add a grid for better readability
-    ax.grid(True, linestyle='--', alpha=0.7)
-
-    # Adjust the layout and display the plot
-    fig.tight_layout()
-    plt.show()
-
-    # Save the plot with higher resolution
-    fig.savefig('state_errors.png', dpi=600, bbox_inches='tight')
-
 def plot_control_input(v, omega, output_path):
 
     # Create an iteration array
@@ -221,7 +178,7 @@ def plot_state_errors(xs, yref_N):
     plt.show()
 
     # Save the plot with higher resolution
-    fig.savefig('state_errors.png', dpi=600, bbox_inches='tight')
+    fig.savefig('state_errors_dnn.png', dpi=600, bbox_inches='tight')
 
 def animate(i, xs, us, simX_history, cube_ids, ax, differential_robot, cube_size, yref_N, safe_distance):
     # Clear the previous plot
@@ -278,9 +235,9 @@ def run():
     control_current = control_init
 
     # Cost matrices
-    state_cost_matrix = 10*np.diag([5, 5, 9])
+    state_cost_matrix = 15*np.diag([5, 5, 9])
     control_cost_matrix = np.diag([0.1, 0.01])
-    terminal_cost_matrix = 10*np.diag([5, 5, 9])
+    terminal_cost_matrix = 15*np.diag([5, 5, 9])
 
     ## Constraints
     state_lower_bound = np.array([-10.0, -10.0, -3.14])
@@ -291,18 +248,18 @@ def run():
     # Obstacle
     obstacles_positions = np.array([
         [5.0, 3.0],
-        [3.5, 4.5],
+        [3.0, 4.5],
         [2.0, 3.0]
     ])
 
     obstacle_velocities = np.array([
         [1.0, 0.0],
-        [1.0, 0.0],
-        [0.0, 1.0]
+        [-1.0, 0.0],
+        [0.0, -1.0]
     ])
 
     obstacle_radii = np.array([0.5, 0.5, 0.5])
-    safe_distance = 0.3
+    safe_distance = 0.5
 
     # Simulation 
     simulation = DiffSimulation()
@@ -311,7 +268,8 @@ def run():
     N = 30
     sampling_time = 0.01
     Ts = N * sampling_time
-    Tsim = int(N / sampling_time)
+    # Tsim = int(N / sampling_time)
+    Tsim = 2000
 
 
     # Track history 
@@ -365,6 +323,8 @@ def run():
     plane_id = p.loadURDF("plane.urdf")
     robot_id = p.loadURDF("/home/eroxii/ocp_ws/bullet3/data/husky/husky.urdf", [0, 0, 0.1])
 
+    
+
     # # Set gravity
     p.setGravity(0, 0, -9.81)
 
@@ -415,7 +375,7 @@ def run():
     simU = np.zeros((solver.mpc.dims.N, solver.mpc.dims.nu))
 
     # Target position
-    yref_N = np.array([5.0, 6.0, 1.57, 1.0, 0.0])
+    yref_N = np.array([6.0, 6.0, 1.57, 1.0, 0.0])
 
 
     # Prepare simulation 
@@ -439,7 +399,7 @@ def run():
         print(f"Current state: {state_current}")
 
         # Dynamic object
-        # obstacles_positions[:] += obstacle_velocities * sampling_time
+        # obstacles_positions[:] += obstacle_velocities * sampling_time 
 
         # solve mpc
         simX, simU = solver.solve_mpc(state_current, simX, simU, yref_N, yref_N[:3], obstacles_positions)
@@ -478,6 +438,8 @@ def run():
     ani = animation.FuncAnimation(fig, animate, frames=len(xs), fargs=(xs, us, simX_history, cube_ids, ax, differential_robot, cube_size, yref_N, safe_distance), interval=1000, blit=False)
 
     p.stopStateLogging(log_id)
+
+    p.disconnect()
     # Save the animation as a video
     ani.save('diff_mpc_dnn.mp4', writer='ffmpeg', fps=60)
 

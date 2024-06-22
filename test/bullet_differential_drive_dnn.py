@@ -190,21 +190,21 @@ def run():
     control_current = control_init
 
     # Cost matrices
-    state_cost_matrix = np.diag([3, 3, 5])
-    control_cost_matrix = np.diag([1, 0.1])
-    terminal_cost_matrix = np.diag([3, 3, 5])
+    state_cost_matrix = 1*np.diag([2, 2, 9])
+    control_cost_matrix = np.diag([0.1, 0.01])
+    terminal_cost_matrix = 1*np.diag([2, 2, 9])
 
     ## Constraints
     state_lower_bound = np.array([-10.0, -10.0, -3.14])
     state_upper_bound = np.array([10.0, 10.0, 3.14])
-    control_lower_bound = np.array([-1.0, -3.14])
-    control_upper_bound = np.array([10.0, 3.14])
+    control_lower_bound = np.array([-5.0, -3.14])
+    control_upper_bound = np.array([5.0, 3.14])
 
     # Obstacle
     obstacles_positions = np.array([
-        [4.0, 3.0],
-        [5.0, 5.0],
-        [2.0, 3.0]
+        [5.0, -5.0],
+        [-3.0, -4.5],
+        [5.0, 3.0]
     ])
     obstacle_radii = np.array([0.5, 0.5, 0.5])
     safe_distance = 0.2
@@ -213,7 +213,7 @@ def run():
     simulation = DiffSimulation()
 
     # MPC params
-    N = 20
+    N = 30
     sampling_time = 0.05
     Ts = N * sampling_time
     Tsim = int(N / sampling_time)
@@ -225,12 +225,12 @@ def run():
     simX_history = []
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    # model = MultiLayerPerceptron().to(device)
-    # model.load_state_dict(torch.load("saved_models/mlp_diff_300x100.pth", map_location=device))
-    # model.eval() 
+    model = MultiLayerPerceptron().to(device)
+    model.load_state_dict(torch.load("saved_models/mlp_diff_300x100.pth", map_location=device))
+    model.eval() 
 
     learned_dyn_model = l4c.L4CasADi(
-        MultiLayerPerceptron().to(device),
+        model=model,
         model_expects_batch_dim=True,
         name='learned_dynamics_differential_drive'
     )
@@ -261,7 +261,7 @@ def run():
     )
 
     # # Connect to the PyBullet server
-    physicsClient = p.connect(p.DIRECT)
+    physicsClient = p.connect(p.GUI)
     p.setAdditionalSearchPath(pybullet_data.getDataPath())
 
     # Load urddf
@@ -271,21 +271,22 @@ def run():
     # # Set gravity
     p.setGravity(0, 0, -9.81)
 
-    # # Load the cube object
+    # Load the cube object
     cube_size = 0.5
     cube_mass = 1.0
     cube_visual_shape_id = p.createVisualShape(shapeType=p.GEOM_BOX, halfExtents=[cube_size]*3, rgbaColor=[1, 0, 0, 1])
     cube_collision_shape_id = p.createCollisionShape(shapeType=p.GEOM_BOX, halfExtents=[cube_size]*3)
     cube_id1 = p.createMultiBody(baseMass=cube_mass, baseCollisionShapeIndex=cube_collision_shape_id,
-                                 baseVisualShapeIndex=cube_visual_shape_id,
-                                 basePosition=[obstacles_positions[0][0],obstacles_positions[0][1], cube_size])
+                                baseVisualShapeIndex=cube_visual_shape_id,
+                                basePosition=[obstacles_positions[0][0],obstacles_positions[0][1], cube_size])
     cube_id2 = p.createMultiBody(baseMass=cube_mass, baseCollisionShapeIndex=cube_collision_shape_id,
-                                 baseVisualShapeIndex=cube_visual_shape_id, 
-                                 basePosition=[obstacles_positions[1][0],obstacles_positions[1][1], cube_size])
+                                baseVisualShapeIndex=cube_visual_shape_id, 
+                                basePosition=[obstacles_positions[1][0],obstacles_positions[1][1], cube_size])
     cude_id3 = p.createMultiBody(baseMass=cube_mass, baseCollisionShapeIndex=cube_collision_shape_id,
-                                 baseVisualShapeIndex=cube_visual_shape_id, 
-                                 basePosition=[obstacles_positions[2][0],obstacles_positions[2][1], cube_size])
+                                baseVisualShapeIndex=cube_visual_shape_id, 
+                                basePosition=[obstacles_positions[2][0],obstacles_positions[2][1], cube_size])
 
+    cube_ids = [cube_id1, cube_id2, cude_id3]
     # Set the fps
     target_fps =240
     timestep = 1 / target_fps
@@ -318,14 +319,25 @@ def run():
     simU = np.zeros((solver.mpc.dims.N, solver.mpc.dims.nu))
 
     # Target position
-    yref_N = np.array([6.0, 7.0, 1.57, 1.0, 1.57])
+    yref_N = np.array([3.0, 6.0, 1.57, 1.0, 0.0])
 
+    obstacle_velocities = []
+    for position in obstacles_positions:
+        direction = yref_N[:2] - position
+        direction_norm = np.linalg.norm(direction)
+        if direction_norm != 0:
+            velocity = 0.1 * direction / direction_norm
+        else:
+            velocity = np.array([0.0, 0.0])
+        obstacle_velocities.append(velocity)
+
+    obstacle_velocities = np.array(obstacle_velocities)
 
     # Prepare simulation 
     fig, ax = plt.subplots(figsize=(10, 10))
     differential_robot = DiffSimulation()
 
-    p.setTimeStep(sampling_time)
+    p.setTimeStep(target_fps)
 
     for _ in range(Tsim):
         # Get robot current state
@@ -337,6 +349,11 @@ def run():
         state_current = np.array([pos[0], pos[1], yaw])
 
         print(f"Current state: {state_current}")
+
+        obstacles_positions[:] += obstacle_velocities * sampling_time
+
+        for j, cube_id in enumerate(cube_ids):
+            p.resetBasePositionAndOrientation(cube_id, [obstacles_positions[j][0], obstacles_positions[j][1], cube_size], [0, 0, 0, 1])
 
         # solve mpc
         simX, simU = solver.solve_mpc(state_current, simX, simU, yref_N, yref_N[:3], obstacles_positions)

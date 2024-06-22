@@ -449,7 +449,7 @@ if __name__ == "__main__":
     [2.0, 2.0, 0.4], 
     [3.0, 3.5, 0.4]])
 
-    safety_margin_rate = 0.5
+    safety_margin_rate = 0.8
     # Generate reference path
     center_x = 0.0
     center_y = 0.0
