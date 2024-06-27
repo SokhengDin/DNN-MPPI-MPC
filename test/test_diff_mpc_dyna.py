@@ -70,11 +70,12 @@ class MPCController:
 
     def export_casadi_model(self):
         # Dynamic model setup 
-        m = 33.455  # Total mass of the robot (kg)
+        m = 2.0  # Significantly reduced mass to make the robot extremely light
         I = 2.0296  # Moment of inertia about z-axis (kg·m²)
         r = 0.17775  # Wheel radius (m)
         L = 0.5708  # Wheel separation (m)
         W = 0.5708  # Wheel width (distance between front and rear wheels)
+
 
         # States
         x = ca.MX.sym('x')
@@ -104,7 +105,7 @@ class MPCController:
         rhs = ca.vertcat(dx, dy, dtheta, dv, domega)
 
         # Define xdot
-        xdot = ca.MX.sym('xdot', 4, 1)
+        xdot = ca.MX.sym('xdot', 5, 1)
 
         # Define implicit dynamics
         f_impl = xdot - rhs
@@ -272,11 +273,12 @@ class MPCController:
         """
         Four-wheeled robot dynamics.
         """
-        m = 33.455  # Total mass of the robot (kg)
+        m = 2.0  # Significantly reduced mass to make the robot extremely light
         I = 2.0296  # Moment of inertia about z-axis (kg·m²)
         r = 0.17775  # Wheel radius (m)
         L = 0.5708  # Wheel separation (m)
         W = 0.5708  # Wheel width (distance between front and rear wheels)
+
         
         theta = x[2]
         v = x[3]
@@ -312,6 +314,81 @@ def update_obstacle_positions(step, initial_positions):
     
     return positions
 
+def plot_state_reference_and_feedback(target_state, state_history):
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8))
+
+    state_array = np.array(state_history)
+    time_steps = range(len(state_array))
+
+    ax1.plot(time_steps, [target_state[0]] * len(time_steps), 'r--', label='X position reference')
+    ax1.plot(time_steps, [target_state[1]] * len(time_steps), 'g--', label='Y position reference')
+    ax1.plot(time_steps, [target_state[2]] * len(time_steps), 'b--', label='Theta reference')
+    ax1.plot(time_steps, state_array[:, 0], 'r', label='X position feedback')
+    ax1.plot(time_steps, state_array[:, 1], 'g', label='Y position feedback')
+    ax1.plot(time_steps, state_array[:, 2], 'b', label='Theta feedback')
+    ax1.set_xlabel('Time step')
+    ax1.set_ylabel('Position (m) / Orientation (rad)')
+    ax1.set_title('Robot Position and Orientation')
+    ax1.legend()
+    ax1.grid(True)
+
+    ax2.plot(time_steps, [target_state[3]] * len(time_steps), 'c--', label='Linear velocity reference')
+    ax2.plot(time_steps, [target_state[4]] * len(time_steps), 'm--', label='Angular velocity reference')
+    ax2.plot(time_steps, state_array[:, 3], 'c', label='Linear velocity feedback')
+    ax2.plot(time_steps, state_array[:, 4], 'm', label='Angular velocity feedback')
+    ax2.set_xlabel('Time step')
+    ax2.set_ylabel('Velocity (m/s or rad/s)')
+    ax2.set_title('Robot Velocities')
+    ax2.legend()
+    ax2.grid(True)
+
+    plt.tight_layout()
+    plt.savefig('state_reference_and_feedback.png', dpi=300)
+    plt.close(fig)
+
+
+def plot_state_errors(xs, yref_N):
+    # Extract the final state from the trajectory
+    final_state = xs[-1]
+
+    # Calculate the state errors
+    state_errors = np.abs(final_state[:3] - yref_N[:3])
+
+    # Create labels for the states
+    state_labels = ['X', 'Y', 'Yaw']
+
+    # Set custom colors for the bars
+    colors = ['#1f77b4', '#ff7f0e', '#2ca02c']
+
+    # Create a figure and axis with larger size
+    fig, ax = plt.subplots(figsize=(10, 8))
+
+    # Plot the state errors as a bar plot with custom colors
+    bars = ax.bar(state_labels, state_errors, color=colors)
+
+    # Add labels and title with larger font sizes
+    ax.set_xlabel('State', fontsize=16)
+    ax.set_ylabel('Error', fontsize=16)
+    ax.set_title('State Errors', fontsize=20)
+
+    # Increase the font size of the tick labels
+    ax.tick_params(axis='both', labelsize=14)
+
+    # Add value labels to the bars
+    for bar in bars:
+        height = bar.get_height()
+        ax.text(bar.get_x() + bar.get_width() / 2, height,
+                f'{height:.2f}', ha='center', va='bottom', fontsize=12)
+
+    # Add a grid for better readability
+    ax.grid(True, linestyle='--', alpha=0.7)
+
+    # Adjust the layout and display the plot
+    fig.tight_layout()
+    plt.show()
+
+    # Save the plot with higher resolution
+    fig.savefig('state_errors_no_dnn.png', dpi=600, bbox_inches='tight')
 
 if __name__ == "__main__":
     # Initialize the MPC Controller     
@@ -324,28 +401,28 @@ if __name__ == "__main__":
     control_current = control_init.copy()
 
     ## Cost Matrices
-    state_cost_matrix = np.diag([1000, 500, 900, 1, 100])
+    state_cost_matrix = np.diag([60, 50, 90, 2, 0.5])
     control_cost_matrix = np.diag([0.1, 0.1, 0.1, 0.1])  
-    terminal_cost_matrix = 5*state_cost_matrix
+    terminal_cost_matrix = 2*state_cost_matrix
 
     ## Constraints
     large_bound = 1e6  
     state_lower_bound = np.array([-large_bound, -large_bound, -large_bound, -2.0, -np.pi])
     state_upper_bound = np.array([large_bound, large_bound, large_bound, 2.0, np.pi])
-    control_lower_bound = 4*np.array([-10.0, -10.0, -10.0, -10.0])
-    control_upper_bound = 4*np.array([10.0, 10.0, 10.0, 10.0])
+    control_lower_bound = 2*np.array([-10.0, -10.0, -10.0, -10.0])
+    control_upper_bound = 2*np.array([10.0, 10.0, 10.0, 10.0])
 
     # Define multiple obstacles
     initial_obstacle_positions = np.array([
-        [2.0, 1.0],
+        [2.0, 4.0],
         [4.0, 2.5], 
-        [2.0, 3.0]   
+        [2.0, 4.0]   
     ])
     obstacle_radii = np.array([0.5, 0.3, 0.4])
-    safe_distance = 0.2
+    safe_distance = 0.4
 
     ## Prediction Horizon
-    N = 50
+    N = 10
     dt = 0.1
     Ts = N * dt  # Prediction horizon time
 
@@ -354,7 +431,7 @@ if __name__ == "__main__":
     # Simulation time
     sim_time = 15  # seconds
     # num_sim_steps = int(sim_time / dt)
-    num_sim_steps = 500
+    num_sim_steps = 300
 
     ## Tracks history
     xs = [state_init.copy()]
@@ -390,11 +467,14 @@ if __name__ == "__main__":
     fig, ax = plt.subplots(figsize=(10, 10))
 
     # Target state
-    target_state = np.array([4.0, 1.0, 0.0, 0.0, 0.0])
+    target_state = np.array([3.0, 6.0, 1.57, 0.0, 0.0])
 
     # Input control history
-    tau_r = [0.0]
-    tau_l = [0.0]
+    tau_fr = [0.0]
+    tau_fl = [0.0]
+    tau_rr = [0.0]
+    tau_rl = [0.0]
+
 
     # Simulation loop
     def animate(step):
@@ -422,8 +502,10 @@ if __name__ == "__main__":
             xs.append(state_current)
             us.append(u)
 
-            tau_r.append(u[0])
-            tau_l.append(u[1])
+            tau_fr.append(u[0])
+            tau_fl.append(u[1])
+            tau_rr.append(u[2])
+            tau_rl.append(u[3])
 
             # Clear the previous plot
             ax.clear()
@@ -449,8 +531,8 @@ if __name__ == "__main__":
             ax.plot(simX[:, 0], simX[:, 1], 'r--', linewidth=1.5, label='Predicted trajectory')
 
             # Set plot limits and labels
-            ax.set_xlim(-1, 6)
-            ax.set_ylim(-1, 6)
+            ax.set_xlim(-1, 10)
+            ax.set_ylim(-1, 10)
             ax.set_xlabel('X position')
             ax.set_ylabel('Y position')
             ax.set_title(f'Differential Drive Robot - Step {step}')
@@ -476,21 +558,36 @@ if __name__ == "__main__":
 
     # Save control inputs plot to a file instead of displaying it
     control_inputs = np.array(us)
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8))
+    fig, (ax1, ax2, ax3, ax4) = plt.subplots(4, 1, figsize=(10, 8))
 
-    ax1.plot(tau_r, label='Right wheel torque')
+    ax1.plot(tau_fr, label='Front-right wheel torque')
     ax1.set_xlabel('Time step')
     ax1.set_ylabel('Torque (N·m)')
     ax1.set_title('Right Wheel Control Input')
     ax1.legend()
     ax1.grid(True)
 
-    ax2.plot(tau_l, label='Left wheel torque')
+    ax2.plot(tau_fr, label='Front-left wheel torque')
     ax2.set_xlabel('Time step')
     ax2.set_ylabel('Torque (N·m)')
     ax2.set_title('Left Wheel Control Input')
     ax2.legend()
     ax2.grid(True)
+
+    ax3.plot(tau_rr, label='Rear-right wheel torque')
+    ax3.set_xlabel('Time step')
+    ax3.set_ylabel('Torque (N·m)')
+    ax3.set_title('Right Wheel Control Input')
+    ax3.legend()
+    ax3.grid(True)
+
+    ax4.plot(tau_rl, label='Rear-left wheel torque')
+    ax4.set_xlabel('Time step')
+    ax4.set_ylabel('Torque (N·m)')
+    ax4.set_title('Left Wheel Control Input')
+    ax4.legend()
+    ax4.grid(True)
+
 
     plt.tight_layout()
     plt.savefig('control_inputs.png')
@@ -513,12 +610,15 @@ if __name__ == "__main__":
     ax2.plot(state_array[:, 4], label='Angular velocity')
     ax2.set_xlabel('Time step')
     ax2.set_ylabel('Velocity (m/s or rad/s)')
-    ax2.set_title('Robot Velocities')
+    ax2.set_title('Control Input')
     ax2.legend()
     ax2.grid(True)
 
     plt.tight_layout()
     plt.savefig('robot_states.png')
     plt.close(fig)  # Close the figure to free up memory
+
+    plot_state_reference_and_feedback(target_state, xs)
+    plot_state_errors(xs, target_state[:3])
 
 print("Simulation complete. Results saved to video and image files.")

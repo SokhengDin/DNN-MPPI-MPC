@@ -8,7 +8,6 @@ import casadi as ca
 
 from scipy.linalg import block_diag
 from acados_template import AcadosModel, AcadosOcp, AcadosOcpSolver, AcadosSimSolver, AcadosSim
-from models.differentialSimV2 import DiffSimulation
 from typing import Tuple
 
 def plot_arrow(x, y, yaw, length=0.05, width=0.3, fc="b", ec="k"):
@@ -70,38 +69,36 @@ class MPCController:
 
     def export_casadi_model(self):
         # Dynamic model setup 
-        m = 33.455  # Total mass of the robot (kg)
-        I = 2.0296  # Moment of inertia about z-axis (kg·m²)
-        r = 0.17775  # Wheel radius (m)
-        L = 0.5708  # Wheel separation (m)
-        W = 0.5708  # Wheel width (distance between front and rear wheels)
+        m = 1500  # Mass of the vehicle (kg)
+        Iz = 3000  # Moment of inertia about z-axis (kg·m²)
+        lf = 1.0  # Distance from center of gravity to front axle (m)
+        lr = 1.5  # Distance from center of gravity to rear axle (m)
+        Cf = 19000  # Cornering stiffness of front tires (N/rad)
+        Cr = 33000  # Cornering stiffness of rear tires (N/rad)
 
         # States
         x = ca.MX.sym('x')
         y = ca.MX.sym('y')
-        theta = ca.MX.sym('theta')
+        yaw = ca.MX.sym('yaw')
         v = ca.MX.sym('v')
-        omega = ca.MX.sym('omega')
-        states = ca.vertcat(x, y, theta, v, omega)
+        states = ca.vertcat(x, y, yaw, v)
 
-        # Controls (wheel torques)
-        tau_fr = ca.MX.sym('tau_fr')  # Front-right wheel torque
-        tau_fl = ca.MX.sym('tau_fl')  # Front-left wheel torque
-        tau_rr = ca.MX.sym('tau_rr')  # Rear-right wheel torque
-        tau_rl = ca.MX.sym('tau_rl')  # Rear-left wheel torque
-        controls = ca.vertcat(tau_fr, tau_fl, tau_rr, tau_rl)
+        # Controls
+        a = ca.MX.sym('a')  # Acceleration
+        delta = ca.MX.sym('delta')  # Steering angle
+        controls = ca.vertcat(a, delta)
 
         # Parameters for obstacles
         p = ca.MX.sym('p', 9)  # 6 for obstacle positions, 3 for obstacle radii
 
         # Dynamics
-        dx = v * ca.cos(theta)
-        dy = v * ca.sin(theta)
-        dtheta = omega
-        dv = (r / (4 * m)) * (tau_fr + tau_fl + tau_rr + tau_rl)
-        domega = (r / (L * I)) * ((tau_fr + tau_rr) - (tau_fl + tau_rl)) / 2
+        beta = ca.arctan((lr * ca.tan(delta)) / (lf + lr))
+        dx = v * ca.cos(yaw + beta)
+        dy = v * ca.sin(yaw + beta)
+        dyaw = (v / lr) * ca.sin(beta)
+        dv = a
 
-        rhs = ca.vertcat(dx, dy, dtheta, dv, domega)
+        rhs = ca.vertcat(dx, dy, dyaw, dv)
 
         # Define xdot
         xdot = ca.MX.sym('xdot', 4, 1)
@@ -125,7 +122,7 @@ class MPCController:
         model.u = controls
         model.p = p
         model.con_h_expr = ca.vertcat(*constraints)
-        model.name = 'four_wheel_drive_dynamics'
+        model.name = 'race_car_dynamics'
 
         return model
     
@@ -205,7 +202,7 @@ class MPCController:
         mpc.solver_options.tf = self.Ts
 
         print("Creating MPC solver...")
-        mpc_solver = AcadosOcpSolver(mpc, json_file='mpc_differential_drive_dynamics.json')
+        mpc_solver = AcadosOcpSolver(mpc, json_file='mpc_race_car_dynamics.json')
         print("MPC solver created successfully.")
         return mpc_solver, mpc
 
@@ -270,26 +267,25 @@ class MPCController:
     
     def dynamics(self, x, u):
         """
-        Four-wheeled robot dynamics.
+        Race car dynamics.
         """
-        m = 33.455  # Total mass of the robot (kg)
-        I = 2.0296  # Moment of inertia about z-axis (kg·m²)
-        r = 0.17775  # Wheel radius (m)
-        L = 0.5708  # Wheel separation (m)
-        W = 0.5708  # Wheel width (distance between front and rear wheels)
+        m = 1500  # Mass of the vehicle (kg)
+        Iz = 3000  # Moment of inertia about z-axis (kg·m²)
+        lf = 1.0  # Distance from center of gravity to front axle (m)
+        lr = 1.5  # Distance from center of gravity to rear axle (m)
+        Cf = 19000  # Cornering stiffness of front tires (N/rad)
+        Cr = 33000  # Cornering stiffness of rear tires (N/rad)
         
-        theta = x[2]
-        v = x[3]
-        omega = x[4]
-        tau_fr, tau_fl, tau_rr, tau_rl = u
+        x_pos, y_pos, yaw, v = x
+        a, delta = u
         
-        dx = v * np.cos(theta)
-        dy = v * np.sin(theta)
-        dtheta = omega
-        dv = (r / (4 * m)) * (tau_fr + tau_fl + tau_rr + tau_rl)
-        domega = (r / (L * I)) * ((tau_fr + tau_rr) - (tau_fl + tau_rl)) / 2
+        beta = np.arctan((lr * np.tan(delta)) / (lf + lr))
+        dx = v * np.cos(yaw + beta)
+        dy = v * np.sin(yaw + beta)
+        dyaw = (v / lr) * np.sin(beta)
+        dv = a
         
-        return np.array([dx, dy, dtheta, dv, domega])
+        return np.array([dx, dy, dyaw, dv])
 
 def update_obstacle_positions(step, initial_positions):
     """
@@ -316,24 +312,24 @@ def update_obstacle_positions(step, initial_positions):
 if __name__ == "__main__":
     # Initialize the MPC Controller     
     ## State and Control
-    state_init = np.array([0.0, 0.0, 0.0, 0.0, 0.0]) 
-    control_init = np.array([0.0, 0.0, 0.0, 0.0])  
+    state_init = np.array([0.0, 0.0, 0.0, 0.0]) 
+    control_init = np.array([0.0, 0.0])  
 
     ## Current State and Control
     state_current = state_init.copy()
     control_current = control_init.copy()
 
     ## Cost Matrices
-    state_cost_matrix = np.diag([1000, 500, 900, 1, 100])
-    control_cost_matrix = np.diag([0.1, 0.1, 0.1, 0.1])  
-    terminal_cost_matrix = 5*state_cost_matrix
+    state_cost_matrix = 10*np.diag([5, 5, 9, 10])
+    control_cost_matrix = np.diag([0.1, 0.1])  
+    terminal_cost_matrix = 2 * state_cost_matrix
 
     ## Constraints
     large_bound = 1e6  
-    state_lower_bound = np.array([-large_bound, -large_bound, -large_bound, -2.0, -np.pi])
-    state_upper_bound = np.array([large_bound, large_bound, large_bound, 2.0, np.pi])
-    control_lower_bound = 4*np.array([-10.0, -10.0, -10.0, -10.0])
-    control_upper_bound = 4*np.array([10.0, 10.0, 10.0, 10.0])
+    state_lower_bound = np.array([-large_bound, -large_bound, -np.pi, -15.0])
+    state_upper_bound = np.array([large_bound, large_bound, np.pi, 15.0])
+    control_lower_bound = np.array([-5.0, -np.pi])
+    control_upper_bound = np.array([5.0, np.pi])
 
     # Define multiple obstacles
     initial_obstacle_positions = np.array([
@@ -342,19 +338,16 @@ if __name__ == "__main__":
         [2.0, 3.0]   
     ])
     obstacle_radii = np.array([0.5, 0.3, 0.4])
-    safe_distance = 0.2
+    safe_distance = 0.5
 
     ## Prediction Horizon
-    N = 50
-    dt = 0.1
+    N = 10
+    dt = 0.05
     Ts = N * dt  # Prediction horizon time
-
-    robot = DiffSimulation()
 
     # Simulation time
     sim_time = 15  # seconds
-    # num_sim_steps = int(sim_time / dt)
-    num_sim_steps = 500
+    num_sim_steps = 100
 
     ## Tracks history
     xs = [state_init.copy()]
@@ -378,8 +371,6 @@ if __name__ == "__main__":
         dt=dt,
         Ts=Ts,
         slack_weight=1000.0,
-        # slack_lower_bound=0.0,
-        # slack_upper_bound=1.0,
         cost_type='NONLINEAR_LS'
     )
 
@@ -390,11 +381,11 @@ if __name__ == "__main__":
     fig, ax = plt.subplots(figsize=(10, 10))
 
     # Target state
-    target_state = np.array([4.0, 1.0, 0.0, 0.0, 0.0])
+    target_state = np.array([4.0, 1.0, 0.0, 0.0])
 
     # Input control history
-    tau_r = [0.0]
-    tau_l = [0.0]
+    accel = [0.0]
+    steer = [0.0]
 
     # Simulation loop
     def animate(step):
@@ -405,7 +396,7 @@ if __name__ == "__main__":
             obstacle_positions = update_obstacle_positions(step, initial_obstacle_positions)
             # Determine the reference trajectory
             state_ref = target_state
-            control_ref = np.array([0.0, 0.0, 0.0, 0.0]) 
+            control_ref = np.array([0.0, 0.0]) 
             yref = np.concatenate([state_ref, control_ref])
             yref_N = state_ref  # Terminal state reference
 
@@ -422,28 +413,26 @@ if __name__ == "__main__":
             xs.append(state_current)
             us.append(u)
 
-            tau_r.append(u[0])
-            tau_l.append(u[1])
+            accel.append(u[0])
+            steer.append(u[1])
 
             # Clear the previous plot
             ax.clear()
 
-            # Plot the robot
-            # plot_arrow(state_current[0], state_current[1], state_current[2], length=0.5, width=0.2, fc="r", ec="k")
-
             # Plot the target point
             ax.plot(target_state[0], target_state[1], 'g*', markersize=15, label='Target')
 
-            robot.generate_each_wheel_and_draw(ax, state_current[0], state_current[1], state_current[2])
+            # Plot the race car
+            plot_arrow(state_current[0], state_current[1], state_current[2], length=0.5, width=0.2, fc="r", ec="k")
 
             # Plot obstacles
             for obstacle_pos, obstacle_radius in zip(obstacle_positions, obstacle_radii):
                 obstacle = plt.Circle(obstacle_pos, obstacle_radius, color='gray', alpha=0.7)
                 ax.add_patch(obstacle)
 
-            # Plot the robot's trajectory
+            # Plot the race car's trajectory
             xs_array = np.array(xs)
-            ax.plot(xs_array[:, 0], xs_array[:, 1], 'b-', linewidth=1.5, label='Robot trajectory')
+            ax.plot(xs_array[:, 0], xs_array[:, 1], 'b-', linewidth=1.5, label='Race Car trajectory')
 
             # Plot the predicted trajectory
             ax.plot(simX[:, 0], simX[:, 1], 'r--', linewidth=1.5, label='Predicted trajectory')
@@ -453,7 +442,7 @@ if __name__ == "__main__":
             ax.set_ylim(-1, 6)
             ax.set_xlabel('X position')
             ax.set_ylabel('Y position')
-            ax.set_title(f'Differential Drive Robot - Step {step}')
+            ax.set_title(f'Race Car - Step {step}')
             ax.legend()
 
             # Return the updated objects
@@ -467,33 +456,29 @@ if __name__ == "__main__":
     ani = animation.FuncAnimation(fig, animate, frames=num_sim_steps, interval=100, blit=False, repeat=False)
 
     # Save the animation as an MP4 file
-    ani.save('differential_drive_dynamics.mp4', writer='ffmpeg', fps=10)
-
-    # Display the plot
-    # plt.show()
+    ani.save('race_car_dynamics.mp4', writer='ffmpeg', fps=10)
 
     control_inputs = np.array(us)
 
     # Save control inputs plot to a file instead of displaying it
-    control_inputs = np.array(us)
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8))
 
-    ax1.plot(tau_r, label='Right wheel torque')
+    ax1.plot(accel, label='Acceleration')
     ax1.set_xlabel('Time step')
-    ax1.set_ylabel('Torque (N·m)')
-    ax1.set_title('Right Wheel Control Input')
+    ax1.set_ylabel('Acceleration (m/s^2)')
+    ax1.set_title('Acceleration Control Input')
     ax1.legend()
     ax1.grid(True)
 
-    ax2.plot(tau_l, label='Left wheel torque')
+    ax2.plot(steer, label='Steering angle')
     ax2.set_xlabel('Time step')
-    ax2.set_ylabel('Torque (N·m)')
-    ax2.set_title('Left Wheel Control Input')
+    ax2.set_ylabel('Steering angle (rad)')
+    ax2.set_title('Steering Angle Control Input')
     ax2.legend()
     ax2.grid(True)
 
     plt.tight_layout()
-    plt.savefig('control_inputs.png')
+    plt.savefig('control_inputs_racecar.png')
     plt.close(fig)  # Close the figure to free up memory
 
     # Save states plot to a file instead of displaying it
@@ -502,23 +487,22 @@ if __name__ == "__main__":
 
     ax1.plot(state_array[:, 0], label='X position')
     ax1.plot(state_array[:, 1], label='Y position')
-    ax1.plot(state_array[:, 2], label='Theta (orientation)')
+    ax1.plot(state_array[:, 2], label='Yaw (orientation)')
     ax1.set_xlabel('Time step')
     ax1.set_ylabel('Position (m) / Orientation (rad)')
-    ax1.set_title('Robot Position and Orientation')
+    ax1.set_title('Race Car Position and Orientation')
     ax1.legend()
     ax1.grid(True)
 
-    ax2.plot(state_array[:, 3], label='Linear velocity')
-    ax2.plot(state_array[:, 4], label='Angular velocity')
+    ax2.plot(state_array[:, 3], label='Velocity')
     ax2.set_xlabel('Time step')
-    ax2.set_ylabel('Velocity (m/s or rad/s)')
-    ax2.set_title('Robot Velocities')
+    ax2.set_ylabel('Velocity (m/s)')
+    ax2.set_title('Race Car Velocity')
     ax2.legend()
     ax2.grid(True)
 
     plt.tight_layout()
-    plt.savefig('robot_states.png')
+    plt.savefig('race_car_states.png')
     plt.close(fig)  # Close the figure to free up memory
 
 print("Simulation complete. Results saved to video and image files.")

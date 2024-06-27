@@ -247,15 +247,15 @@ def run():
 
     # Obstacle
     obstacles_positions = np.array([
-        [5.0, 3.0],
-        [3.0, 4.5],
-        [2.0, 3.0]
+        [5.0, -5.0],
+        [-3.0, -4.5],
+        [5.0, 3.0]
     ])
 
-    obstacle_velocities = np.array([
-        [1.0, 0.0],
-        [-1.0, 0.0],
-        [0.0, -1.0]
+    obstacle_velocities = 0.4*np.array([
+        [1.0, 1.0],
+        [1.0, 1.0],
+        [1.0, 5.0]
     ])
 
     obstacle_radii = np.array([0.5, 0.5, 0.5])
@@ -266,7 +266,7 @@ def run():
 
     # MPC params
     N = 30
-    sampling_time = 0.01
+    sampling_time = 0.05
     Ts = N * sampling_time
     # Tsim = int(N / sampling_time)
     Tsim = 2000
@@ -280,8 +280,9 @@ def run():
     simX_history = []
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print("device", device)
     model = MultiLayerPerceptron().to(device)
-    model.load_state_dict(torch.load("saved_models/mlp_diff_300x100.pth", map_location=device))
+    model.load_state_dict(torch.load("/home/eroxii/ocp_ws/RL-MPPI-MPC/saved_models/mlp_diff_300x100_v2.pth", map_location=device))
     model.eval() 
 
     learned_dyn_model = l4c.L4CasADi(
@@ -319,11 +320,28 @@ def run():
     physicsClient = p.connect(p.DIRECT)
     p.setAdditionalSearchPath(pybullet_data.getDataPath())
 
+    p.configureDebugVisualizer(p.COV_ENABLE_GUI, 0)
+    p.configureDebugVisualizer(p.COV_ENABLE_SEGMENTATION_MARK_PREVIEW, 0)
+    p.configureDebugVisualizer(p.COV_ENABLE_DEPTH_BUFFER_PREVIEW, 0)
+    p.configureDebugVisualizer(p.COV_ENABLE_RGB_BUFFER_PREVIEW, 0)
+    p.configureDebugVisualizer(p.COV_ENABLE_MOUSE_PICKING, 1)
+    p.configureDebugVisualizer(p.COV_ENABLE_SHADOWS, 0)
+    p.configureDebugVisualizer(p.COV_ENABLE_WIREFRAME, 0)
+    p.configureDebugVisualizer(p.COV_ENABLE_RENDERING, 1)
+
+    p.configureDebugVisualizer(p.COV_ENABLE_SINGLE_STEP_RENDERING, 1)
+    p.configureDebugVisualizer(p.COV_ENABLE_TINY_RENDERER, 0)
+    p.configureDebugVisualizer(p.COV_ENABLE_RENDERING, 1)
+
     # Load urddf
     plane_id = p.loadURDF("plane.urdf")
-    robot_id = p.loadURDF("/home/eroxii/ocp_ws/bullet3/data/husky/husky.urdf", [0, 0, 0.1])
+    robot_id = p.loadURDF("/home/eroxii/ocp_ws/RL-MPPI-MPC/urdf/husky/husky_kine.urdf", [0, 0, 0.1])
 
-    
+    camera_distance = 10
+    camera_yaw = 45
+    camera_pitch = -60
+    camera_target_position = [0, 0, 0]
+    p.resetDebugVisualizerCamera(camera_distance, camera_yaw, camera_pitch, camera_target_position)
 
     # # Set gravity
     p.setGravity(0, 0, -9.81)
@@ -334,14 +352,14 @@ def run():
     cube_visual_shape_id = p.createVisualShape(shapeType=p.GEOM_BOX, halfExtents=[cube_size]*3, rgbaColor=[1, 0, 0, 1])
     cube_collision_shape_id = p.createCollisionShape(shapeType=p.GEOM_BOX, halfExtents=[cube_size]*3)
     cube_id1 = p.createMultiBody(baseMass=cube_mass, baseCollisionShapeIndex=cube_collision_shape_id,
-                                 baseVisualShapeIndex=cube_visual_shape_id,
-                                 basePosition=[obstacles_positions[0][0],obstacles_positions[0][1], cube_size])
+                                baseVisualShapeIndex=cube_visual_shape_id,
+                                basePosition=[obstacles_positions[0][0],obstacles_positions[0][1], cube_size])
     cube_id2 = p.createMultiBody(baseMass=cube_mass, baseCollisionShapeIndex=cube_collision_shape_id,
-                                 baseVisualShapeIndex=cube_visual_shape_id, 
-                                 basePosition=[obstacles_positions[1][0],obstacles_positions[1][1], cube_size])
+                                baseVisualShapeIndex=cube_visual_shape_id, 
+                                basePosition=[obstacles_positions[1][0],obstacles_positions[1][1], cube_size])
     cude_id3 = p.createMultiBody(baseMass=cube_mass, baseCollisionShapeIndex=cube_collision_shape_id,
-                                 baseVisualShapeIndex=cube_visual_shape_id, 
-                                 basePosition=[obstacles_positions[2][0],obstacles_positions[2][1], cube_size])
+                                baseVisualShapeIndex=cube_visual_shape_id, 
+                                basePosition=[obstacles_positions[2][0],obstacles_positions[2][1], cube_size])
 
     # Set the fps
     target_fps =240
@@ -375,17 +393,28 @@ def run():
     simU = np.zeros((solver.mpc.dims.N, solver.mpc.dims.nu))
 
     # Target position
-    yref_N = np.array([6.0, 6.0, 1.57, 1.0, 0.0])
+    yref_N = np.array([3.0, 6.0, 1.57, 1.0, 0.0])
 
+    obstacle_velocities = []
+    for position in obstacles_positions:
+        direction = yref_N[:2] - position
+        direction_norm = np.linalg.norm(direction)
+        if direction_norm != 0:
+            velocity = 0.1 * direction / direction_norm
+        else:
+            velocity = np.array([0.0, 0.0])
+        obstacle_velocities.append(velocity)
+
+    obstacle_velocities = np.array(obstacle_velocities)
 
     # Prepare simulation 
     fig, ax = plt.subplots(figsize=(10, 10))
     differential_robot = DiffSimulation()
 
-    p.setTimeStep(sampling_time)
+    p.setTimeStep(timestep)
 
     # Configure video logging
-    log_id = p.startStateLogging(p.STATE_LOGGING_VIDEO_MP4, "diff_mpc_dnn_bullet.mp4")
+    # log_id = p.startStateLogging(p.STATE_LOGGING_VIDEO_MP4, "diff_mpc_dnn_bullet.mp4")
 
     for i in range(Tsim):
         # Get robot current state
@@ -399,7 +428,10 @@ def run():
         print(f"Current state: {state_current}")
 
         # Dynamic object
-        # obstacles_positions[:] += obstacle_velocities * sampling_time 
+        obstacles_positions[:] += obstacle_velocities * sampling_time 
+
+        for j, cube_id in enumerate(cube_ids):
+            p.resetBasePositionAndOrientation(cube_id, [obstacles_positions[j][0], obstacles_positions[j][1], cube_size], [0, 0, 0, 1])
 
         # solve mpc
         simX, simU = solver.solve_mpc(state_current, simX, simU, yref_N, yref_N[:3], obstacles_positions)
@@ -437,9 +469,6 @@ def run():
     # Create the animation
     ani = animation.FuncAnimation(fig, animate, frames=len(xs), fargs=(xs, us, simX_history, cube_ids, ax, differential_robot, cube_size, yref_N, safe_distance), interval=1000, blit=False)
 
-    p.stopStateLogging(log_id)
-
-    p.disconnect()
     # Save the animation as a video
     ani.save('diff_mpc_dnn.mp4', writer='ffmpeg', fps=60)
 
@@ -449,6 +478,9 @@ def run():
 
     # Close the figure
     plt.close(fig)
+
+    # Disconnect from the physics server after saving the animation and creating the plots
+    p.disconnect()
 
 if __name__ == "__main__":
     run()

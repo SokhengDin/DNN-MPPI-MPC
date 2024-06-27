@@ -91,6 +91,7 @@ class MPCController:
         tau_rl = ca.MX.sym('tau_rl')  # Rear-left wheel torque
         controls = ca.vertcat(tau_fr, tau_fl, tau_rr, tau_rl)
 
+
         # Parameters for obstacles
         p = ca.MX.sym('p', 9)  # 6 for obstacle positions, 3 for obstacle radii
 
@@ -104,17 +105,21 @@ class MPCController:
         rhs = ca.vertcat(dx, dy, dtheta, dv, domega)
 
         # Define xdot
-        xdot = ca.MX.sym('xdot', 4, 1)
+        xdot = ca.MX.sym('xdot', 5, 1)
 
         # Define implicit dynamics
         f_impl = xdot - rhs
 
-        # Define obstacle avoidance constraints
+        slack_vars = []
+        for i in range(3):
+            slack_vars.append(ca.MX.sym(f'slack_{i}'))
+        slack = ca.vertcat(*slack_vars)
+
         constraints = []
-        for i in range(3):  # Assuming 3 obstacles
+        for i in range(3):  
             obstacle_distance = (x - p[2*i])**2 + (y - p[2*i+1])**2
-            obstacle_radius = p[6+i]  # Radius for this obstacle
-            constraints.append(obstacle_distance - (obstacle_radius + self.safe_distance)**2)
+            obstacle_radius = p[6+i] * 0.8  
+            constraints.append(obstacle_distance - (obstacle_radius + self.safe_distance)**2 + slack[i])
 
         # Create an Acados model
         model = AcadosModel()
@@ -123,6 +128,7 @@ class MPCController:
         model.x = states
         model.xdot = xdot
         model.u = controls
+        model.z = slack  # Declare slack variables as inputs
         model.p = p
         model.con_h_expr = ca.vertcat(*constraints)
         model.name = 'four_wheel_drive_dynamics'
@@ -136,49 +142,54 @@ class MPCController:
         mpc.model = model
         nx = model.x.size()[0]
         nu = model.u.size()[0]
-        ny = nx + nu
+        nz = model.z.size()[0]
+        ny = nx + nu 
         ny_e = nx
+        n_slack = 3
 
         # set dimensions
         mpc.dims.N = self.N
         mpc.dims.nx = nx
         mpc.dims.nu = nu
+        mpc.dims.nz = n_slack
         mpc.dims.ny = ny
         mpc.dims.ny_e = ny_e
 
+        mpc.dims.nh = n_slack
+        mpc.dims.ns = n_slack
+        mpc.dims.nsh = n_slack
+
         # Set cost
-        if self.cost_type == 'LINEAR_LS':
-            mpc.cost.cost_type = 'LINEAR_LS'
-            mpc.cost.cost_type_e = 'LINEAR_LS'
-            mpc.cost.W = block_diag(self.state_cost_matrix, self.control_cost_matrix)
-            mpc.cost.W_e = self.terminal_cost_matrix
-            Vx = np.zeros((ny, nx))
-            Vx[:nx, :nx] = np.eye(nx)
-            mpc.cost.Vx = Vx
-            mpc.cost.Vx_e = np.eye(nx)
-            Vu = np.zeros((ny, nu))
-            Vu[nx:nx + nu, 0:nu] = np.eye(nu)
-            mpc.cost.Vu = Vu
-            mpc.cost.yref = np.zeros((ny,))
-            mpc.cost.yref_e = np.zeros((ny_e,))
-        elif self.cost_type == 'NONLINEAR_LS':
-            mpc.cost.cost_type = 'NONLINEAR_LS'
-            mpc.cost.cost_type_e = 'NONLINEAR_LS'
-            mpc.model.cost_y_expr = ca.vertcat(model.x, model.u)
-            mpc.model.cost_y_expr_e = model.x
-            mpc.cost.yref = np.zeros((ny,))
-            mpc.cost.yref_e = np.zeros((ny_e,))
-            mpc.cost.W = block_diag(self.state_cost_matrix, self.control_cost_matrix)
-            mpc.cost.W_e = self.terminal_cost_matrix
+        mpc.cost.cost_type = 'NONLINEAR_LS'
+        mpc.cost.cost_type_e = 'NONLINEAR_LS'
+
+        mpc.model.cost_y_expr = ca.vertcat(model.x, model.u)
+        mpc.model.cost_y_expr_e = model.x
+
+        mpc.cost.yref = np.zeros((ny,))
+        mpc.cost.yref_e = np.zeros((ny_e,))
+
+        mpc.cost.W = np.block([
+            [self.state_cost_matrix, np.zeros((nx, nu))],
+            [np.zeros((nu, nx)), self.control_cost_matrix]
+        ])
+        mpc.cost.W_e = self.terminal_cost_matrix
+
+        mpc.cost.Zl = self.slack_weight * np.ones((n_slack,))
+        mpc.cost.Zu = self.slack_weight * np.ones((n_slack,))
+        mpc.cost.zl = np.zeros((n_slack,))
+        mpc.cost.zu = np.zeros((n_slack,))
 
         # Set constraints
         mpc.constraints.x0 = x0
         mpc.constraints.lbx = self.state_constraints['lbx']
         mpc.constraints.ubx = self.state_constraints['ubx']
         mpc.constraints.idxbx = np.arange(nx)
+
         mpc.constraints.lbx_e = self.state_constraints['lbx']
         mpc.constraints.ubx_e = self.state_constraints['ubx']
         mpc.constraints.idxbx_e = np.arange(nx)
+
         mpc.constraints.lbu = self.control_constraints['lbu']
         mpc.constraints.ubu = self.control_constraints['ubu']
         mpc.constraints.idxbu = np.arange(nu)
@@ -188,17 +199,22 @@ class MPCController:
         mpc.constraints.lh = np.zeros((num_obstacles,))
         mpc.constraints.uh = np.full((num_obstacles,), 1e9)
 
+        # Set slack constraints
+        mpc.constraints.lsh = np.zeros((n_slack,))
+        mpc.constraints.ush = np.full((n_slack,), self.slack_weight)
+        mpc.constraints.idxsh = np.arange(n_slack)
+
         # Set up parameters
         mpc.parameter_values = np.zeros(model.p.size()[0])
 
         # Set solver options
-        mpc.solver_options.qp_solver = 'FULL_CONDENSING_HPIPM'
+        mpc.solver_options.qp_solver = 'PARTIAL_CONDENSING_HPIPM'
         mpc.solver_options.hessian_approx = 'GAUSS_NEWTON'
         mpc.solver_options.integrator_type = 'IRK'
         mpc.solver_options.nlp_solver_type = 'SQP_RTI'
         mpc.solver_options.sim_method_num_stages = 4
         mpc.solver_options.sim_method_num_steps = 3
-        mpc.solver_options.nlp_solver_max_iter = 400
+        mpc.solver_options.nlp_solver_max_iter = 1000
         mpc.solver_options.qp_solver_cond_N = self.N
 
         # Set prediction horizons
@@ -218,6 +234,7 @@ class MPCController:
                 ) -> Tuple[np.ndarray, np.ndarray]:
         nx = self.model.x.size()[0]
         nu = self.model.u.size()[0]
+        nslack = 3
 
         if x0.shape[0] != nx:
             raise ValueError(f"Initial state x0 must have dimension {nx}, but got {x0.shape[0]}.")
@@ -301,7 +318,7 @@ def update_obstacle_positions(step, initial_positions):
     
     # Circular motion for the first obstacle
     radius = 0.5
-    angular_speed = 0.08
+    angular_speed = 0.1
     positions[0, 0] = 2.0 + radius * np.cos(angular_speed * step)
     positions[0, 1] = 1.0 + radius * np.sin(angular_speed * step)
     
@@ -324,28 +341,28 @@ if __name__ == "__main__":
     control_current = control_init.copy()
 
     ## Cost Matrices
-    state_cost_matrix = np.diag([1000, 500, 900, 1, 100])
+    state_cost_matrix = np.diag([700, 700, 1500, 10, 5]) 
     control_cost_matrix = np.diag([0.1, 0.1, 0.1, 0.1])  
-    terminal_cost_matrix = 5*state_cost_matrix
+    terminal_cost_matrix = 2*state_cost_matrix
 
     ## Constraints
     large_bound = 1e6  
     state_lower_bound = np.array([-large_bound, -large_bound, -large_bound, -2.0, -np.pi])
     state_upper_bound = np.array([large_bound, large_bound, large_bound, 2.0, np.pi])
-    control_lower_bound = 4*np.array([-10.0, -10.0, -10.0, -10.0])
-    control_upper_bound = 4*np.array([10.0, 10.0, 10.0, 10.0])
+    control_lower_bound = 10*np.array([-10.0, -10.0, -10.0, -10.0])
+    control_upper_bound = 10*np.array([10.0, 10.0, 10.0, 10.0])
 
     # Define multiple obstacles
     initial_obstacle_positions = np.array([
-        [2.0, 1.0],
-        [4.0, 2.5], 
-        [2.0, 3.0]   
+        [2.0, 1.0],  # Obstacle 1 position (x, y)
+        [4.0, 2.5],  # Obstacle 2 position (x, y)
+        [2.0, 3.0]   # Obstacle 3 position (x, y)
     ])
     obstacle_radii = np.array([0.5, 0.3, 0.4])
-    safe_distance = 0.2
+    safe_distance = 0.3
 
     ## Prediction Horizon
-    N = 50
+    N = 20
     dt = 0.1
     Ts = N * dt  # Prediction horizon time
 
@@ -354,7 +371,7 @@ if __name__ == "__main__":
     # Simulation time
     sim_time = 15  # seconds
     # num_sim_steps = int(sim_time / dt)
-    num_sim_steps = 500
+    num_sim_steps = 350
 
     ## Tracks history
     xs = [state_init.copy()]
@@ -377,7 +394,7 @@ if __name__ == "__main__":
         N=N,
         dt=dt,
         Ts=Ts,
-        slack_weight=1000.0,
+        slack_weight=1.0,
         # slack_lower_bound=0.0,
         # slack_upper_bound=1.0,
         cost_type='NONLINEAR_LS'
@@ -390,11 +407,11 @@ if __name__ == "__main__":
     fig, ax = plt.subplots(figsize=(10, 10))
 
     # Target state
-    target_state = np.array([4.0, 1.0, 0.0, 0.0, 0.0])
+    target_state = np.array([3.0, 2.5, 1.57, 0.0, 0.0])
 
     # Input control history
-    tau_r = [0.0]
-    tau_l = [0.0]
+    tau_r = []
+    tau_l = []
 
     # Simulation loop
     def animate(step):
@@ -405,7 +422,7 @@ if __name__ == "__main__":
             obstacle_positions = update_obstacle_positions(step, initial_obstacle_positions)
             # Determine the reference trajectory
             state_ref = target_state
-            control_ref = np.array([0.0, 0.0, 0.0, 0.0]) 
+            control_ref = np.array([0.0, 0.0, 0.0, 0.0])  #
             yref = np.concatenate([state_ref, control_ref])
             yref_N = state_ref  # Terminal state reference
 

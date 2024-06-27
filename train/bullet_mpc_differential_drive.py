@@ -71,15 +71,11 @@ def collect_data(num_samples, mpc, dt, robot_id, yref, yref_N, obstacle_position
 
         # Get the optimal control input
         u = simU[0, :]
-        v = u[0]  # Linear velocity
-        omega = u[1]  # Angular velocity
+        v = u[0]  
+        omega = u[1] 
 
         # Calculate wheel velocities using inverse kinematics
         v_front_left, v_front_right, v_rear_left, v_rear_right = inverse_kinematics(v, omega)
-
-        # Debug information
-        # print("State:", state_current)
-        # print("Control:", u)
 
         # Apply the control input to the Husky robot
         p.setJointMotorControl2(robot_id, 2, p.VELOCITY_CONTROL, targetVelocity=v_front_left, maxVelocity=1.0)

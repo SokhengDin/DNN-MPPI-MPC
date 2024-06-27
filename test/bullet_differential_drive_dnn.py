@@ -213,10 +213,10 @@ def run():
     simulation = DiffSimulation()
 
     # MPC params
-    N = 30
-    sampling_time = 0.05
+    N = 10
+    sampling_time = 0.1
     Ts = N * sampling_time
-    Tsim = int(N / sampling_time)
+    Tsim = 500
 
 
     # Track history 
@@ -225,9 +225,13 @@ def run():
     simX_history = []
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = MultiLayerPerceptron().to(device)
-    model.load_state_dict(torch.load("saved_models/mlp_diff_300x100.pth", map_location=device))
-    model.eval() 
+    model = MultiLayerPerceptron(5).to(device)
+    model.load_state_dict(torch.load("saved_models/mlp_diff_300x100_3l.pth", map_location=device))
+    model.eval()
+
+    state_scaler = torch.load("saved_models/scalers_mlp_diff_300x100_20_l.pth")["state_scaler"]
+    control_scaler = torch.load("saved_models/scalers_mlp_diff_300x100_20_l.pth")["control_scaler"]
+    error_scaler = torch.load("saved_models/scalers_mlp_diff_300x100_20_l.pth")["error_scaler"]
 
     learned_dyn_model = l4c.L4CasADi(
         model=model,
@@ -355,8 +359,15 @@ def run():
         for j, cube_id in enumerate(cube_ids):
             p.resetBasePositionAndOrientation(cube_id, [obstacles_positions[j][0], obstacles_positions[j][1], cube_size], [0, 0, 0, 1])
 
+        # Scale the state and control inputs
+        state_current_scaled = state_scaler.transform(state_current.reshape(1, -1)).flatten()
+        simU_scaled = control_scaler.transform(simU)
+
         # solve mpc
-        simX, simU = solver.solve_mpc(state_current, simX, simU, yref_N, yref_N[:3], obstacles_positions)
+        simX_scaled, simU_scaled = solver.solve_mpc(state_current_scaled, simX, simU_scaled, yref_N, yref_N[:3], obstacles_positions)
+
+        # Inverse transform the control inputs
+        simU = control_scaler.inverse_transform(simU_scaled)
 
         # Get the control inputs
         u = simU[0, :]
@@ -366,10 +377,10 @@ def run():
         v_front_left, v_front_right, v_rear_left, v_rear_right = inverse_kinematics(v, omega)
 
         # Apply to each joint
-        p.setJointMotorControl2(robot_id, 2, p.VELOCITY_CONTROL, targetVelocity=v_front_left, maxVelocity=1.0)
-        p.setJointMotorControl2(robot_id, 3, p.VELOCITY_CONTROL, targetVelocity=v_front_right, maxVelocity=1.0)
-        p.setJointMotorControl2(robot_id, 4, p.VELOCITY_CONTROL, targetVelocity=v_rear_left, maxVelocity=1.0)
-        p.setJointMotorControl2(robot_id, 5, p.VELOCITY_CONTROL, targetVelocity=v_rear_right, maxVelocity=1.0)
+        p.setJointMotorControl2(robot_id, 2, p.VELOCITY_CONTROL, targetVelocity=v_front_left, maxVelocity=10.0)
+        p.setJointMotorControl2(robot_id, 3, p.VELOCITY_CONTROL, targetVelocity=v_front_right, maxVelocity=10.0)
+        p.setJointMotorControl2(robot_id, 4, p.VELOCITY_CONTROL, targetVelocity=v_rear_left, maxVelocity=10.0)
+        p.setJointMotorControl2(robot_id, 5, p.VELOCITY_CONTROL, targetVelocity=v_rear_right, maxVelocity=10.0)
 
         # Update the history
         xs.append(state_current)

@@ -168,13 +168,13 @@ def run():
     # Cost matrices
     state_cost_matrix = 1*np.diag([2, 2, 9])
     control_cost_matrix = np.diag([0.1, 0.01])
-    terminal_cost_matrix = 1*np.diag([2, 2, 9])
+    terminal_cost_matrix = 2*np.diag([2, 2, 9])
 
     ## Constraints
     state_lower_bound = np.array([-10.0, -10.0, -3.14])
     state_upper_bound = np.array([10.0, 10.0, 3.14])
-    control_lower_bound = np.array([-5.0, -3.14])
-    control_upper_bound = np.array([5.0, 3.14])
+    control_lower_bound = np.array([-10.0, -3.14])
+    control_upper_bound = np.array([10.0, 3.14])
 
     # Obstacle
     obstacles_positions = np.array([
@@ -190,18 +190,17 @@ def run():
     ])
 
     obstacle_radii = np.array([0.5, 0.5, 0.5])
-    safe_distance = 0.8
+    safe_distance = 0.5
 
     # Simulation 
     simulation = DiffSimulation()
 
     # MPC params
-    N = 30
+    N = 25
     sampling_time = 0.05
     Ts = N * sampling_time
-    # Tsim = int(N / sampling_time)
+    Tsim = int(N / sampling_time)
     Tsim = 10000
-
 
     # Track history 
     xs = [state_init.copy()]
@@ -253,7 +252,7 @@ def run():
 
     # Load urddf
     plane_id = p.loadURDF("plane.urdf")
-    robot_id = p.loadURDF("/home/eroxii/ocp_ws/bullet3/data/husky/husky.urdf", [0, 0, 0.1])
+    robot_id = p.loadURDF("/home/eroxii/ocp_ws/RL-MPPI-MPC/urdf/husky/husky_kine.urdf", [0, 0, 0.1])
 
     camera_distance = 10
     camera_yaw = 45
@@ -310,7 +309,7 @@ def run():
     simU = np.zeros((solver.mpc.dims.N, solver.mpc.dims.nu))
 
     # Target position
-    yref_N = np.array([3.0, 6.0, 1.57, 1.0, 0.0])
+    yref_N = np.array([3.0, 6.0, 1.57, 2.0, 0.0])
 
     obstacle_velocities = []
     for position in obstacles_positions:
@@ -330,7 +329,7 @@ def run():
 
     p.setTimeStep(timestep)
 
-    log_id = p.startStateLogging(p.STATE_LOGGING_VIDEO_MP4, "diff_mpc_bullet.mp4")
+    # log_id = p.startStateLogging(p.STATE_LOGGING_VIDEO_MP4, "diff_mpc_bullet.mp4")
 
     for i in range(Tsim):
         # Get robot current state
@@ -383,9 +382,8 @@ def run():
     
 
     # Create the animation
-    ani = animation.FuncAnimation(fig, animate, frames=len(xs), fargs=(xs, us, simX_history, cube_ids, ax, differential_robot, cube_size, yref_N, safe_distance), interval=50, blit=False)
-
-    p.stopStateLogging(log_id)
+    ani = animation.FuncAnimation(fig, animate, frames=len(xs), fargs=(xs, us, simX_history, cube_ids, ax, differential_robot, cube_size, yref_N, safe_distance), interval=1000, blit=False)
+    # p.stopStateLogging(log_id)
 
     # Save the animation as a video
     ani.save('diff_mpc.mp4', writer='ffmpeg', fps=30)
