@@ -70,8 +70,8 @@ class MPCController:
 
     def export_casadi_model(self):
         # Dynamic model setup 
-        m = 2.0  # Significantly reduced mass to make the robot extremely light
-        I = 2.0296  # Moment of inertia about z-axis (kg·m²)
+        m = 25.0  # Significantly reduced mass to make the robot extremely light
+        I = 1.0296  # Moment of inertia about z-axis (kg·m²)
         r = 0.17775  # Wheel radius (m)
         L = 0.5708  # Wheel separation (m)
         W = 0.5708  # Wheel width (distance between front and rear wheels)
@@ -332,10 +332,10 @@ def plot_state_reference_and_feedback(target_state, state_history):
     ax1.legend()
     ax1.grid(True)
 
-    ax2.plot(time_steps, [target_state[3]] * len(time_steps), 'c--', label='Linear velocity reference')
-    ax2.plot(time_steps, [target_state[4]] * len(time_steps), 'm--', label='Angular velocity reference')
-    ax2.plot(time_steps, state_array[:, 3], 'c', label='Linear velocity feedback')
-    ax2.plot(time_steps, state_array[:, 4], 'm', label='Angular velocity feedback')
+    # ax2.plot(time_steps, [target_state[3]] * len(time_steps), 'c--', label='Linear velocity reference')
+    # ax2.plot(time_steps, [target_state[4]] * len(time_steps), 'm--', label='Angular velocity reference')
+    ax2.plot(time_steps, state_array[:, 3], 'c', label='Linear velocity')
+    ax2.plot(time_steps, state_array[:, 4], 'm', label='Angular velocity')
     ax2.set_xlabel('Time step')
     ax2.set_ylabel('Velocity (m/s or rad/s)')
     ax2.set_title('Robot Velocities')
@@ -343,7 +343,7 @@ def plot_state_reference_and_feedback(target_state, state_history):
     ax2.grid(True)
 
     plt.tight_layout()
-    plt.savefig('state_reference_and_feedback.png', dpi=300)
+    plt.savefig('state_reference_and_feedback_dnn.png', dpi=300)
     plt.close(fig)
 
 
@@ -388,7 +388,7 @@ def plot_state_errors(xs, yref_N):
     plt.show()
 
     # Save the plot with higher resolution
-    fig.savefig('state_errors_no_dnn.png', dpi=600, bbox_inches='tight')
+    fig.savefig('state_errors_dnn.png', dpi=600, bbox_inches='tight')
 
 if __name__ == "__main__":
     # Initialize the MPC Controller     
@@ -401,16 +401,16 @@ if __name__ == "__main__":
     control_current = control_init.copy()
 
     ## Cost Matrices
-    state_cost_matrix = np.diag([60, 50, 90, 2, 0.5])
+    state_cost_matrix = 100*np.diag([15, 10, 9, 1, 0.1])
     control_cost_matrix = np.diag([0.1, 0.1, 0.1, 0.1])  
-    terminal_cost_matrix = 2*state_cost_matrix
+    terminal_cost_matrix = 5*state_cost_matrix
 
     ## Constraints
     large_bound = 1e6  
     state_lower_bound = np.array([-large_bound, -large_bound, -large_bound, -2.0, -np.pi])
     state_upper_bound = np.array([large_bound, large_bound, large_bound, 2.0, np.pi])
-    control_lower_bound = 2*np.array([-10.0, -10.0, -10.0, -10.0])
-    control_upper_bound = 2*np.array([10.0, 10.0, 10.0, 10.0])
+    control_lower_bound = 1*np.array([-10.0, -10.0, -10.0, -10.0])
+    control_upper_bound = 1*np.array([10.0, 10.0, 10.0, 10.0])
 
     # Define multiple obstacles
     initial_obstacle_positions = np.array([
@@ -419,11 +419,11 @@ if __name__ == "__main__":
         [2.0, 4.0]   
     ])
     obstacle_radii = np.array([0.5, 0.3, 0.4])
-    safe_distance = 0.4
+    safe_distance = 0.3
 
     ## Prediction Horizon
-    N = 10
-    dt = 0.1
+    N = 30
+    dt = 0.05
     Ts = N * dt  # Prediction horizon time
 
     robot = DiffSimulation()
@@ -475,6 +475,8 @@ if __name__ == "__main__":
     tau_rr = [0.0]
     tau_rl = [0.0]
 
+    obstacle_positions_history = []
+
 
     # Simulation loop
     def animate(step):
@@ -483,6 +485,7 @@ if __name__ == "__main__":
         try:
             # Update obstacle positions
             obstacle_positions = update_obstacle_positions(step, initial_obstacle_positions)
+            obstacle_positions_history.append(obstacle_positions)
             # Determine the reference trajectory
             state_ref = target_state
             control_ref = np.array([0.0, 0.0, 0.0, 0.0]) 
@@ -550,6 +553,31 @@ if __name__ == "__main__":
 
     # Save the animation as an MP4 file
     ani.save('differential_drive_dynamics.mp4', writer='ffmpeg', fps=10)
+
+    # Convert lists to numpy arrays for saving
+    xs_array = np.array(xs)
+    us_array = np.array(us)
+    tau_fr_array = np.array(tau_fr)
+    tau_fl_array = np.array(tau_fl)
+    tau_rr_array = np.array(tau_rr)
+    tau_rl_array = np.array(tau_rl)
+    obstacle_positions_array = np.array(obstacle_positions_history)
+
+
+    if not os.path.exists('slides_data'):
+        os.makedirs('slides_data')
+
+    # Save data as .npy files in the slides_data folder
+    np.save('slides_data/robot_states_dnn.npy', xs_array)
+    np.save('slides_data/control_inputs_dnn.npy', us_array)
+    # np.save('slides_data/tau_fr.npy', tau_fr_array)
+    # np.save('slides_data/tau_fl.npy', tau_fl_array)
+    # np.save('slides_data/tau_rr.npy', tau_rr_array)
+    # np.save('slides_data/tau_rl.npy', tau_rl_array)
+    np.save('slides_data/target_state_dnn.npy', target_state)
+    np.save('slides_data/obstacle_positions_dnn.npy', obstacle_positions_array)
+    np.save('slides_data/obstacle_radii_dnn.npy', obstacle_radii)
+    np.save('slides_data/initial_obstacle_positions_dnn.npy', initial_obstacle_positions)
 
     # Display the plot
     # plt.show()

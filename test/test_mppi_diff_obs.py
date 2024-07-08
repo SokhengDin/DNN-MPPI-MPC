@@ -12,7 +12,7 @@ from collections import deque
 from scipy.signal import savgol_filter
 
 initial_obstacle_positions = torch.tensor([[5.0, 4.0], [3.5, 3.5]], dtype=torch.float32)
-obstacle_velocities = 0.09*torch.tensor([[0.1, 0.1], [-0.1, 0.1]], dtype=torch.float32)
+obstacle_velocities = 0.09*torch.tensor([[0.2, 0.1], [-0.1, 0.1]], dtype=torch.float32)
 
 def get_obstacle_positions(t):
     if t is None:
@@ -381,7 +381,7 @@ def create_animation(states_history, optimal_trajs, sampled_trajs, ref_path, goa
     ref_path = tensor_to_numpy(ref_path)
     goal_state = tensor_to_numpy(goal_state)
 
-    fig, ax = plt.subplots(figsize=(12, 12))
+    fig, ax = plt.subplots(figsize=(12, 7))
     
     # Main plot setup
     ax.set_xlabel('X')
@@ -458,7 +458,7 @@ def create_animation(states_history, optimal_trajs, sampled_trajs, ref_path, goa
                 safety_circle, robot_popup, *obstacle_artists, *obstacle_popups)
 
     ani = FuncAnimation(fig, animate, frames=len(states_history)-1, interval=50, blit=True, repeat=False)
-    ani.save("mppi_differential_drive_with_dynamic_obstacles.mp4", writer='ffmpeg', fps=30)
+    ani.save("mppi_differential_drive_with_dynamic_obstacles.mp4", writer='ffmpeg', fps=30, dpi=150)
     plt.show()
 
 def plot_control_inputs(actions_history, delta_t):
@@ -511,7 +511,7 @@ def plot_control_inputs(actions_history, delta_t):
     ax2_smooth.grid(True)
 
     plt.tight_layout()
-    plt.savefig('mppi_control_inputs_smooth.png')
+    plt.savefig('mppi_control_inputs_smooth_dnn.png')
     plt.close()
 
 
@@ -554,6 +554,29 @@ def plot_control_inputs_comparison(non_filtered_actions, filtered_actions, delta
     plt.savefig('mppi_control_inputs_comparison.png')
     plt.close()
 
+def plot_state_reference_and_feedback(target_state, state_history):
+    fig, ax = plt.subplots(figsize=(12, 8))
+
+    state_array = np.array(state_history)
+    time_steps = range(len(state_array))
+
+    ax.plot(time_steps, [target_state[0]] * len(time_steps), 'r--', label='X position reference')
+    ax.plot(time_steps, [target_state[1]] * len(time_steps), 'g--', label='Y position reference')
+    ax.plot(time_steps, [target_state[2]] * len(time_steps), 'b--', label='Theta reference')
+    ax.plot(time_steps, state_array[:, 0], 'r', label='X position feedback')
+    ax.plot(time_steps, state_array[:, 1], 'g', label='Y position feedback')
+    ax.plot(time_steps, state_array[:, 2], 'b', label='Theta feedback')
+    ax.set_xlabel('Time step')
+    ax.set_ylabel('Position (m) / Orientation (rad)')
+    ax.set_title('Robot Position and Orientation')
+    ax.legend()
+    ax.grid(True)
+
+
+    plt.tight_layout()
+    plt.savefig('state_reference_and_feedback_mppi_dnn.png', dpi=300)
+    plt.close(fig)
+
 def plot_state_error(states_history, goal_state):
     # Extract the final state from the trajectory
     final_state = states_history[-1]
@@ -594,7 +617,7 @@ def plot_state_error(states_history, goal_state):
     fig.tight_layout()
 
     # Save the plot with higher resolution
-    plt.savefig('mppi_state_errors_mppi.png', dpi=600, bbox_inches='tight')
+    plt.savefig('mppi_state_errors_mppi_dnn.png', dpi=600, bbox_inches='tight')
     plt.close()
 
     print("State error plot saved as 'mppi_state_errors_mppi.png'")
@@ -605,8 +628,8 @@ if __name__ == "__main__":
     nx = 3  # state dimension
     nu = 2  # control dimension
     robot = DiffSimulation()
-    num_samples = 1000
-    horizon = 25
+    num_samples = 1500
+    horizon = 50
     noise_sigma = torch.tensor([[0.5, 0.0], [0.0, 0.3]], device=device)
     lambda_ = 1.0
 
@@ -648,14 +671,32 @@ if __name__ == "__main__":
         mppi_ctrl, initial_state, goal_state, delta_t, max_steps=max_steps, goal_threshold=goal_threshold
     )
 
+    # Create slides_data folder if it doesn't exist
+    if not os.path.exists('slides_data'):
+        os.makedirs('slides_data')
+
+    # Save data as .npy files in the slides_data folder
+    np.save('slides_data/mppi_states_history_dnn.npy', states_history)
+    np.save('slides_data/mppi_non_filtered_actions_dnn.npy', non_filtered_actions)
+    np.save('slides_data/mppi_filtered_actions_dnn.npy', filtered_actions)
+    np.save('slides_data/mppi_optimal_trajs_dnn.npy', optimal_trajs)
+    np.save('slides_data/mppi_sampled_trajs_dnn.npy', sampled_trajs)
+    np.save('slides_data/mppi_distances_to_goal_dnn.npy', distances_to_goal)
+    np.save('slides_data/mppi_goal_state_dnn.npy', goal_state.cpu().numpy())
+    np.save('slides_data/mppi_initial_state_dnn.npy', initial_state.cpu().numpy())
+    np.save('slides_data/mppi_ref_path_dnn.npy', ref_path)
+    np.save('slides_data/mppi_obstacle_positions_dnn.npy', initial_obstacle_positions.cpu().numpy())
+    np.save('slides_data/mppi_obstacle_velocities_dnn.npy', obstacle_velocities.cpu().numpy())
+
     print("Plotting control inputs...")
     plot_control_inputs(non_filtered_actions, delta_t)
     
-    # print("Plotting control inputs comparison...")
-    # plot_control_inputs_comparison(non_filtered_actions, filtered_actions, delta_t)
-
     print("Plotting state error...")
     plot_state_error(states_history, goal_state.cpu().numpy())
+
+    plot_state_reference_and_feedback(goal_state.cpu().numpy(), states_history)
     
     print("Creating animation...")
-    create_animation(states_history, optimal_trajs, sampled_trajs, ref_path, goal_state, robot, safe_distance=0.8)
+    create_animation(states_history, optimal_trajs, sampled_trajs, ref_path, goal_state, robot, safe_distance=0.7)
+
+    print("Simulation complete. Results saved to video, image files, and .npy files in the slides_data folder.")

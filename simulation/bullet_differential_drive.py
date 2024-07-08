@@ -168,7 +168,7 @@ def run():
     # Cost matrices
     state_cost_matrix = 1*np.diag([2, 2, 9])
     control_cost_matrix = np.diag([0.1, 0.01])
-    terminal_cost_matrix = 2*np.diag([2, 2, 9])
+    terminal_cost_matrix = 5*np.diag([2, 2, 9])
 
     ## Constraints
     state_lower_bound = np.array([-10.0, -10.0, -3.14])
@@ -178,15 +178,15 @@ def run():
 
     # Obstacle
     obstacles_positions = np.array([
-        [5.0, -5.0],
+        [5.0, 5.0],
         [-3.0, -4.5],
         [5.0, 3.0]
     ])
 
     obstacle_velocities = 0.4*np.array([
+        [1.0, -1.0],
         [1.0, 1.0],
-        [1.0, 1.0],
-        [1.0, 5.0]
+        [1.0, 0.5]
     ])
 
     obstacle_radii = np.array([0.5, 0.5, 0.5])
@@ -196,8 +196,8 @@ def run():
     simulation = DiffSimulation()
 
     # MPC params
-    N = 25
-    sampling_time = 0.05
+    N = 50
+    sampling_time = 0.1
     Ts = N * sampling_time
     Tsim = int(N / sampling_time)
     Tsim = 10000
@@ -309,7 +309,7 @@ def run():
     simU = np.zeros((solver.mpc.dims.N, solver.mpc.dims.nu))
 
     # Target position
-    yref_N = np.array([3.0, 6.0, 1.57, 2.0, 0.0])
+    yref_N = np.array([6.0, 6.0, 1.57, 0.0, 0.0])
 
     obstacle_velocities = []
     for position in obstacles_positions:
@@ -329,7 +329,7 @@ def run():
 
     p.setTimeStep(timestep)
 
-    # log_id = p.startStateLogging(p.STATE_LOGGING_VIDEO_MP4, "diff_mpc_bullet.mp4")
+    log_id = p.startStateLogging(p.STATE_LOGGING_VIDEO_MP4, "diff_mppi_dnn_bullet.mp4")
 
     for i in range(Tsim):
         # Get robot current state

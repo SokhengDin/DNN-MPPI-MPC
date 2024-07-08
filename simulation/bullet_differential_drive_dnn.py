@@ -393,7 +393,7 @@ def run():
     simU = np.zeros((solver.mpc.dims.N, solver.mpc.dims.nu))
 
     # Target position
-    yref_N = np.array([3.0, 6.0, 1.57, 1.0, 0.0])
+    yref_N = np.array([3.0, 6.0, 1.57, 0.0, 0.0])
 
     obstacle_velocities = []
     for position in obstacles_positions:
@@ -450,10 +450,10 @@ def run():
         v_front_left, v_front_right, v_rear_left, v_rear_right = inverse_kinematics(v, omega)
 
         # Apply to each joint
-        p.setJointMotorControl2(robot_id, 2, p.VELOCITY_CONTROL, targetVelocity=v_front_left, maxVelocity=1.0)
-        p.setJointMotorControl2(robot_id, 3, p.VELOCITY_CONTROL, targetVelocity=v_front_right, maxVelocity=1.0)
-        p.setJointMotorControl2(robot_id, 4, p.VELOCITY_CONTROL, targetVelocity=v_rear_left, maxVelocity=1.0)
-        p.setJointMotorControl2(robot_id, 5, p.VELOCITY_CONTROL, targetVelocity=v_rear_right, maxVelocity=1.0)
+        p.setJointMotorControl2(robot_id, 2, p.VELOCITY_CONTROL, targetVelocity=v_front_left, maxVelocity=10.0)
+        p.setJointMotorControl2(robot_id, 3, p.VELOCITY_CONTROL, targetVelocity=v_front_right, maxVelocity=10.0)
+        p.setJointMotorControl2(robot_id, 4, p.VELOCITY_CONTROL, targetVelocity=v_rear_left, maxVelocity=10.0)
+        p.setJointMotorControl2(robot_id, 5, p.VELOCITY_CONTROL, targetVelocity=v_rear_right, maxVelocity=10.0)
 
         # Update the history
         xs.append(state_current)
