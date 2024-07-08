@@ -1,3 +1,15 @@
 # Ignore compiled Python files
 *.pyc
 __pycache__/
+
+# Ignore test folder
+test/
+
+# Ignore all .mp4 files
+*.mp4
+
+# Ignore all .png files
+*.png
+
+# Ignore all .json files
+*.json
